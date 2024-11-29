@@ -26,6 +26,39 @@ namespace STM32Step
         initPins();
     }
 
+    void Stepper::setRelativePosition(int32_t steps)
+    {
+        if (!_enabled)
+        {
+            SerialDebug.println("ERROR: Motor not enabled");
+            return;
+        }
+
+        if (steps == 0)
+        {
+            return;
+        }
+
+        // Set target position
+        _targetPosition = _currentPosition + steps;
+
+        // Set direction
+        bool newDirection = steps >= 0;
+        if (_currentDirection != newDirection)
+        {
+            _currentDirection = newDirection;
+            setDirection(_currentDirection);
+            delayMicroseconds(TimingConfig::DIR_SETUP);
+        }
+
+        // Start motion if not already running
+        if (!_running)
+        {
+            _running = true;
+            TimerControl::start(this);
+        }
+    }
+
     bool Stepper::moveSteps(int32_t steps, bool wait)
     {
         if (!_enabled)
