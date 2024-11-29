@@ -5,11 +5,10 @@
 #include "Config/encoder_config.h"
 #include <HardwareTimer.h>
 
-// Forward declare interrupt handlers
+// Forward declare interrupt handler
 extern "C"
 {
     void TIM2_IRQHandler(void);
-    void DMA1_Stream1_IRQHandler(void);
 }
 
 class EncoderTimer
@@ -54,7 +53,7 @@ public:
 
     // Position and speed methods
     Position getPosition();
-    int32_t getCount(); // Changed to non-inline to return raw timer value
+    int32_t getCount();
     int16_t getRPM();
     bool isValid() const { return _initialized && !_error; }
 
@@ -82,12 +81,10 @@ public:
 
 protected:
     friend void TIM2_IRQHandler(void);
-    friend void DMA1_Stream1_IRQHandler(void);
 
 private:
-    // Hardware handles
+    // Hardware handle
     TIM_HandleTypeDef htim2;
-    DMA_HandleTypeDef _hdma;
 
     // State variables
     volatile int32_t _currentCount;
@@ -100,14 +97,9 @@ private:
     SyncConfig _syncConfig;
     volatile int32_t _lastSyncCount;
 
-    // DMA buffer
-    static constexpr uint32_t DMA_BUFFER_SIZE = 32;
-    volatile int32_t _dmaBuffer[DMA_BUFFER_SIZE];
-
     // Initialization methods
     bool initGPIO();
     bool initTimer();
-    bool initDMA();
 
     // Helper methods
     int16_t calculateRPM();
@@ -115,9 +107,8 @@ private:
     float calculateSyncRatio() const;
     void handleOverflow();
 
-    // Callbacks
+    // Callback
     static void updateCallback();
-    static void dmaCallback(DMA_HandleTypeDef *hdma);
 
     // Static instance for callbacks
     static EncoderTimer *instance;

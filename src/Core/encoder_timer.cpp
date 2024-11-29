@@ -1,38 +1,17 @@
 // src/Core/encoder_timer.cpp
-/**
- * @file encoder_timer.cpp
- * @brief Quadrature encoder implementation using hardware timer and DMA
- *
- * This implementation uses TIM2 configured in encoder mode to directly count
- * quadrature encoder pulses. The timer handles all quadrature decoding in hardware,
- * while DMA is used to continuously monitor timer updates for reliable position tracking
- * at high speeds.
- *
- * Features:
- * - Hardware quadrature decoding using TIM2
- * - DMA-based position monitoring
- * - Automatic overflow handling
- * - RPM calculation
- * - Support for electronic leadscrew synchronization
- */
-
 #include "Core/encoder_timer.h"
 #include "Config/serial_debug.h"
 
-// Static instance pointer initialization
 EncoderTimer *EncoderTimer::instance = nullptr;
 
-// Constructor / Destructor
 EncoderTimer::EncoderTimer() : _currentCount(0),
                                _lastUpdateTime(0),
                                _error(false),
                                _initialized(false),
                                _syncEnabled(false)
 {
-    memset(&_hdma, 0, sizeof(_hdma));
-    memset(&htim2, 0, sizeof(htim2));
-    memset(&_syncConfig, 0, sizeof(_syncConfig));
-    memset((void *)_dmaBuffer, 0, sizeof(_dmaBuffer));
+    memset(static_cast<void *>(&htim2), 0, sizeof(htim2));
+    memset(static_cast<void *>(&_syncConfig), 0, sizeof(_syncConfig));
 }
 
 EncoderTimer::~EncoderTimer()
@@ -44,53 +23,33 @@ EncoderTimer::~EncoderTimer()
     }
 }
 
-/**
- * @brief Initialize encoder hardware
- *
- * Configures GPIO pins, timer, and DMA for quadrature encoder operation.
- * Uses TIM2 in encoder mode with maximum filtering for noise immunity.
- * DMA is configured to monitor timer updates for reliable position tracking.
- */
 bool EncoderTimer::begin()
 {
     if (_initialized)
         return true;
 
     instance = this;
-    SerialDebug.println("Initializing Encoder...");
 
-    if (!initGPIO() || !initTimer() || !initDMA())
+    // Initialize components one by one with error checking
+    if (!initGPIO())
     {
-        SerialDebug.println("Encoder initialization failed");
         return false;
     }
 
-    // Enable timer counter DMA request
-    TIM2->DIER |= TIM_DIER_UDE; // Enable Update DMA request
-    TIM2->DIER |= TIM_DIER_UIE; // Enable Update interrupt for overflow detection
-
-    // Start DMA transfer from counter register
-    if (HAL_DMA_Start_IT(&_hdma, (uint32_t)&TIM2->CNT,
-                         (uint32_t)(void *)_dmaBuffer, DMA_BUFFER_SIZE) != HAL_OK)
+    if (!initTimer())
     {
-        SerialDebug.println("DMA start failed");
         return false;
     }
 
-    // Enable DMA stream
-    __HAL_DMA_ENABLE(&_hdma);
+    // Enable timer update interrupt for overflow detection
+    __HAL_TIM_ENABLE_IT(&htim2, TIM_IT_UPDATE);
+    HAL_NVIC_SetPriority(TIM2_IRQn, 1, 0);
+    HAL_NVIC_EnableIRQ(TIM2_IRQn);
 
     _initialized = true;
-    SerialDebug.println("Encoder initialized successfully");
     return true;
 }
 
-/**
- * @brief Configure GPIO pins for encoder input
- *
- * Sets up PA0 and PA1 as timer inputs with pull-up resistors
- * and maximum speed for reliable signal capture.
- */
 bool EncoderTimer::initGPIO()
 {
     __HAL_RCC_GPIOA_CLK_ENABLE();
@@ -106,15 +65,6 @@ bool EncoderTimer::initGPIO()
     return true;
 }
 
-/**
- * @brief Configure timer for encoder mode
- *
- * Sets up TIM2 in quadrature encoder mode with:
- * - Maximum input filtering
- * - Both edges counting
- * - 32-bit counter range
- * - No prescaler for maximum resolution
- */
 bool EncoderTimer::initTimer()
 {
     __HAL_RCC_TIM2_CLK_ENABLE();
@@ -139,80 +89,28 @@ bool EncoderTimer::initTimer()
 
     if (HAL_TIM_Encoder_Init(&htim2, &encoder_config) != HAL_OK)
     {
-        SerialDebug.println("Timer init failed");
         return false;
     }
 
     if (HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL) != HAL_OK)
     {
-        SerialDebug.println("Timer start failed");
         return false;
     }
 
     return true;
 }
 
-/**
- * @brief Configure DMA for timer monitoring
- *
- * Sets up DMA to monitor timer counter value:
- * - Uses circular mode for continuous operation
- * - High priority for reliable tracking
- * - Word-size transfers for 32-bit counter
- */
-bool EncoderTimer::initDMA()
-{
-    __HAL_RCC_DMA1_CLK_ENABLE();
-
-    _hdma.Instance = DMA1_Stream1;
-    _hdma.Init.Request = DMA_REQUEST_TIM2_UP;
-    _hdma.Init.Direction = DMA_PERIPH_TO_MEMORY;
-    _hdma.Init.PeriphInc = DMA_PINC_DISABLE;
-    _hdma.Init.MemInc = DMA_MINC_ENABLE;
-    _hdma.Init.PeriphDataAlignment = DMA_PDATAALIGN_WORD;
-    _hdma.Init.MemDataAlignment = DMA_MDATAALIGN_WORD;
-    _hdma.Init.Mode = DMA_CIRCULAR;
-    _hdma.Init.Priority = DMA_PRIORITY_HIGH;
-    _hdma.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
-
-    if (HAL_DMA_Init(&_hdma) != HAL_OK)
-    {
-        SerialDebug.println("DMA init failed");
-        return false;
-    }
-
-    _hdma.XferCpltCallback = dmaCallback;
-    __HAL_LINKDMA(&htim2, hdma[TIM_DMA_ID_UPDATE], _hdma);
-
-    // Enable DMA IRQ
-    HAL_NVIC_SetPriority(DMA1_Stream1_IRQn, 1, 0);
-    HAL_NVIC_EnableIRQ(DMA1_Stream1_IRQn);
-
-    SerialDebug.println("DMA initialized successfully");
-    return true;
-}
-
-/**
- * @brief Clean shutdown of encoder hardware
- */
 void EncoderTimer::end()
 {
     if (!_initialized)
         return;
 
-    // Stop DMA transfer
-    HAL_DMA_Abort(&_hdma);
-    __HAL_DMA_DISABLE(&_hdma);
-
+    HAL_NVIC_DisableIRQ(TIM2_IRQn);
     HAL_TIM_Encoder_Stop(&htim2, TIM_CHANNEL_ALL);
     HAL_TIM_Base_DeInit(&htim2);
-    HAL_DMA_DeInit(&_hdma);
     _initialized = false;
 }
 
-/**
- * @brief Reset encoder position to zero
- */
 void EncoderTimer::reset()
 {
     if (!_initialized)
@@ -225,10 +123,6 @@ void EncoderTimer::reset()
     __enable_irq();
 }
 
-/**
- * @brief Get current encoder count
- * @return Raw timer counter value
- */
 int32_t EncoderTimer::getCount()
 {
     if (!_initialized)
@@ -237,10 +131,6 @@ int32_t EncoderTimer::getCount()
     return (int32_t)__HAL_TIM_GET_COUNTER(&htim2);
 }
 
-/**
- * @brief Configure synchronization parameters
- * Used for electronic leadscrew operation
- */
 void EncoderTimer::setSyncConfig(const SyncConfig &config)
 {
     __disable_irq();
@@ -249,10 +139,6 @@ void EncoderTimer::setSyncConfig(const SyncConfig &config)
     __enable_irq();
 }
 
-/**
- * @brief Get synchronized position data
- * @return Position data for leadscrew synchronization
- */
 EncoderTimer::SyncPosition EncoderTimer::getSyncPosition()
 {
     SyncPosition pos;
@@ -272,10 +158,6 @@ EncoderTimer::SyncPosition EncoderTimer::getSyncPosition()
     return pos;
 }
 
-/**
- * @brief Calculate stepper frequency for given RPM
- * Used for speed synchronization
- */
 float EncoderTimer::calculateStepperFrequency(int16_t rpm)
 {
     if (rpm == 0)
@@ -288,10 +170,6 @@ float EncoderTimer::calculateStepperFrequency(int16_t rpm)
     return rps * steps_per_rev * sync_ratio;
 }
 
-/**
- * @brief Calculate required stepper steps
- * Used for position synchronization
- */
 int32_t EncoderTimer::calculateRequiredSteps(int32_t encoderCount)
 {
     int32_t counts_per_rev = EncoderConfig::RuntimeConfig::ppr * 4;
@@ -306,53 +184,26 @@ int32_t EncoderTimer::calculateRequiredSteps(int32_t encoderCount)
     return _syncConfig.reverse_sync ? -(int32_t)required_steps : (int32_t)required_steps;
 }
 
-/**
- * @brief Calculate synchronization ratio
- * Based on thread and leadscrew pitch
- */
 float EncoderTimer::calculateSyncRatio() const
 {
     return _syncConfig.thread_pitch / _syncConfig.leadscrew_pitch;
 }
 
-/**
- * @brief Handle timer overflow via DMA
- */
 void EncoderTimer::updateCallback(void)
 {
     if (instance)
         instance->handleOverflow();
 }
 
-/**
- * @brief Process timer overflow
- * Updates position tracking on counter wrap
- */
 void EncoderTimer::handleOverflow()
 {
     if (!_initialized)
         return;
 
     _currentCount = getCount();
-
-    // Process latest DMA buffer value
-    uint32_t latest_count = _dmaBuffer[DMA_BUFFER_SIZE - 1];
-
-    if (SerialDebug.available()) // Only print if debug is enabled
-    {
-        SerialDebug.print("Counter: ");
-        SerialDebug.print(_currentCount);
-        SerialDebug.print(" DMA Count: ");
-        SerialDebug.print(latest_count);
-        SerialDebug.print(" Direction: ");
-        SerialDebug.println(__HAL_TIM_IS_TIM_COUNTING_DOWN(&htim2) ? "DOWN" : "UP");
-    }
+    _lastUpdateTime = HAL_GetTick();
 }
 
-/**
- * @brief Get detailed position information
- * @return Position structure with count, direction, and speed
- */
 EncoderTimer::Position EncoderTimer::getPosition()
 {
     Position pos;
@@ -373,10 +224,6 @@ EncoderTimer::Position EncoderTimer::getPosition()
     return pos;
 }
 
-/**
- * @brief Calculate current RPM
- * Uses time-delta method for speed calculation
- */
 int16_t EncoderTimer::calculateRPM()
 {
     static uint32_t lastCount = 0;
@@ -384,7 +231,7 @@ int16_t EncoderTimer::calculateRPM()
     uint32_t currentTime = HAL_GetTick();
     uint32_t deltaTime = currentTime - lastTime;
 
-    if (deltaTime < 10) // Minimum 10ms between calculations
+    if (deltaTime < 10)
         return 0;
 
     int32_t currentCount = getCount();
@@ -393,33 +240,11 @@ int16_t EncoderTimer::calculateRPM()
     lastCount = currentCount;
     lastTime = currentTime;
 
-    // RPM = (delta counts * 60000) / (pulses per rev * time in ms)
     return ((int32_t)(deltaCounts * 15000)) /
            (EncoderConfig::RuntimeConfig::ppr * deltaTime);
 }
 
-/**
- * @brief Get current RPM
- */
 int16_t EncoderTimer::getRPM()
 {
     return calculateRPM();
-}
-
-/**
- * @brief DMA transfer complete callback
- * Updates timestamp for overflow tracking
- */
-void EncoderTimer::dmaCallback(DMA_HandleTypeDef *hdma)
-{
-    if (!instance || !hdma)
-        return;
-
-    if (hdma->Instance == instance->_hdma.Instance)
-    {
-        instance->_lastUpdateTime = HAL_GetTick();
-
-        // Process latest DMA buffer values
-        instance->handleOverflow();
-    }
 }
