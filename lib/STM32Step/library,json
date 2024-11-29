@@ -1,0 +1,36 @@
+{
+  "name": "STM32Step",
+  "version": "1.0.0",
+  "description": "Stepper motor control library for STM32 microcontrollers",
+  "keywords": [
+    "stepper",
+    "motor",
+    "stm32"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/STM32Step.git"
+  },
+  "authors": [
+    {
+      "name": "Your Name",
+      "email": "your.email@example.com",
+      "maintainer": true
+    }
+  ],
+  "license": "MIT",
+  "frameworks": [
+    "arduino"
+  ],
+  "platforms": [
+    "ststm32"
+  ],
+  "build": {
+    "srcFilter": [
+      "+<src/*.cpp>",
+      "+<src/*.c>"
+    ],
+    "includeDir": "include",
+    "libArchive": true
+  }
+}

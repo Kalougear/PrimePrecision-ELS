@@ -1,0 +1,71 @@
+TeensyStep Library Structure
+========================
+
+Core Components
+--------------
+├── TeensyStep.h            # Main library header
+├── Stepper                 # Basic stepper motor control
+│   ├── Stepper.h          # Stepper class declaration
+│   └── Stepper.cpp        # Implementation
+└── Control Bases          # Abstract control interfaces
+    ├── MotorControlBase.h # Base for motor control
+    ├── RotateControlBase.h# Rotation control interface
+    └── StepControlBase.h  # Stepping control interface
+
+Accelerators
+-----------
+└── accelerators/          # Movement profiles
+    ├── LinRotAccelerator.h    # Linear rotation acceleration
+    ├── LinStepAccelerator.h   # Linear stepping acceleration
+    └── SinRotAccelerator.h    # Sinusoidal rotation profile
+
+Timer System
+-----------
+└── timer/                 # Timer implementations
+    ├── TF_Handler.h       # Timer field handler
+    ├── TimerFieldBase.h   # Base timer interface
+    ├── generic/          # Generic timer implementation
+    │   ├── TickTimer     # Basic timing functionality
+    │   └── TimerField    # Timer field management
+    ├── stm32/           # STM32 specific implementation
+    │   └── TimerField   # STM32 timer management
+    ├── teensy3/         # Teensy 3.x implementation
+    │   ├── PIT          # Programmable Interval Timer
+    │   ├── config       # Timer configuration
+    │   └── TeensyStepFTM# Flex Timer Module support
+    └── teensy4/         # Teensy 4.x implementation
+        ├── PIT          # Programmable Interval Timer
+        ├── config       # Timer configuration
+        └── TimerField   # Timer management
+
+Error Handling
+-------------
+├── ErrorHandler.h         # Error handling declarations
+└── ErrorHandler.cpp       # Error handling implementation
+
+Example Applications
+------------------
+└── examples/
+    ├── HelloStepper/     # Basic usage example
+    ├── MultipleSteppers/ # Multiple motor control
+    ├── StepperArray/     # Array-based motor control
+    ├── Path_Following/   # Motion path examples
+    └── Applications/     # Complete application examples
+        └── Winder/      # Winding machine example
+
+Key Features:
+------------
+1. Multiple timer backend support (STM32, Teensy3, Teensy4)
+2. Different acceleration profiles (Linear, Sinusoidal)
+3. Synchronous and asynchronous movement control
+4. Support for both single stepper and stepper arrays
+5. Path following capabilities
+6. Error handling system
+
+Architecture Notes:
+-----------------
+- Modular design with separate timer implementations
+- Abstract base classes for different control types
+- Hardware-specific implementations isolated in subdirectories
+- Generic interfaces for cross-platform compatibility
+- Extensible accelerator system for different motion profiles

@@ -1,0 +1,8 @@
+{
+  "search.useParentIgnoreFiles": false,
+  "search.useGlobalIgnoreFiles": false,
+  "files.associations": {
+    "limits": "cpp",
+    "type_traits": "cpp"
+  }
+}
