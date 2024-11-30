@@ -32,29 +32,24 @@ PrimePrecision-ELS/
 |--->> lib/
 |      |--->> STM32Step/
 |             |--->> examples/
-|             |      |--->> basic_movement/
 |             |      |--->> hbs57_test/
-|             |      |      |--->> hbs57_test.cpp
-|             |      |      |--->> hbs57_test.h
-|             |      |--->> multi_motor/
-|             |      |--->> speed_control/
+|             |             |--->> hbs57_test.cpp
+|             |             |--->> hbs57_test.h
 |             |
 |             |--->> include/
-|             |      |--->> acceleration.h
-|             |      |--->> common.h
-|             |      |--->> config.h
-|             |      |--->> config_interface.h
-|             |      |--->> stepper.h
-|             |      |--->> STM32Step.h
-|             |      |--->> timer_base.h
+|                    |--->> common.h
+|                    |--->> config.h
+|                    |--->> config_interface.h
+|                    |--->> stepper.h
+|                    |--->> STM32Step.h
+|                    |--->> timer_base.h
 |             |
 |             |--->> src/
-|                    |--->> acceleration.cpp
 |                    |--->> config.cpp
 |                    |--->> config_interface.cpp
 |                    |--->> stepper.cpp
 |                    |--->> timer_base.cpp
-|             |--->> library,json
+|             |--->> library.json
 |      |--->> README
 |
 |--->> src/
@@ -90,9 +85,10 @@ PrimePrecision-ELS/
 |      |
 |      |--->> test_motion/
 |      |--->> test_stepper/
-|      |      |--->> basic_frequensy_cycling.md
+|      |      |--->> basic_frequensy_cycling.cpp
+|      |      |--->> basic_movement_test.cpp
 |      |      |--->> basic_step_positioning_test.md
-|      |      |--->> working_test_timer_without dma.md
+|      |      |--->> working_test_timer_without dma.cpp
 |      |      |--->> Working_timer_cpp_.md
 |      |
 |      |--->> test_system_clock/
@@ -101,3 +97,4 @@ PrimePrecision-ELS/
 |
 |--->> .gitignore
 |--->> platformio.ini
+|--->> structure.txt
