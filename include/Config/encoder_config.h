@@ -23,7 +23,7 @@ namespace EncoderConfig
         static constexpr uint16_t DEFAULT_PPR = 1024;
 
         // RPM limits
-        static constexpr uint16_t MIN_RPM = 60;
+        static constexpr uint16_t MIN_RPM = 0;
         static constexpr uint16_t MAX_RPM = 3000;
         static constexpr uint16_t DEFAULT_RPM = 2000;
 

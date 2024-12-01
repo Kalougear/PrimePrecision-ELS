@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Arduino.h>
 #include "Core/encoder_timer.h"
 #include "Core/sync_timer.h"
 #include <STM32Step.h>
@@ -7,7 +8,36 @@
 class MotionControl
 {
 public:
-    // Motion modes
+    // Pin configuration structure
+    struct MotionPins
+    {
+        uint32_t step_pin;
+        uint32_t dir_pin;
+        uint32_t enable_pin;
+    };
+
+    // Configuration structure
+    struct Config
+    {
+        float thread_pitch;      // Desired thread pitch
+        float leadscrew_pitch;   // Leadscrew pitch
+        uint32_t steps_per_rev;  // Steps per revolution
+        uint32_t microsteps;     // Microsteps
+        bool reverse_direction;  // Reverse direction
+        uint32_t sync_frequency; // Sync update frequency (Hz)
+    };
+
+    // Status structure
+    struct Status
+    {
+        int32_t encoder_position;
+        int32_t stepper_position;
+        int16_t spindle_rpm;
+        bool error;
+        const char *error_message;
+    };
+
+    // Operating modes
     enum class Mode
     {
         IDLE,
@@ -16,76 +46,45 @@ public:
         FEEDING
     };
 
-    // Configuration for the motion system
-    struct Config
-    {
-        float thread_pitch;      // mm or TPI
-        float leadscrew_pitch;   // mm
-        uint32_t steps_per_rev;  // Full steps per revolution
-        uint16_t microsteps;     // Microstep setting
-        bool reverse_direction;  // Reverse sync direction
-        uint32_t sync_frequency; // Hz
-    };
-
-    // Pin configuration for motion control
-    struct MotionPins
-    {
-        uint32_t step_pin;   // Stepper step pin
-        uint32_t dir_pin;    // Stepper direction pin
-        uint32_t enable_pin; // Stepper enable pin
-    };
-
+    // Constructors
     MotionControl();
+    explicit MotionControl(const MotionPins &pins);
     ~MotionControl();
 
-    // Initialization
+    // Basic operations
     bool begin();
     void end();
-
-    // Mode control
-    void setMode(Mode mode);
-    Mode getMode() const { return _currentMode; }
-    bool isRunning() const { return _running; }
+    void update(); // New method to process sync requests
 
     // Configuration
     void setConfig(const Config &config);
-    const Config &getConfig() const { return _config; }
+    void setMode(Mode mode);
 
     // Motion control
     void startMotion();
     void stopMotion();
     void emergencyStop();
 
-    MotionControl(const MotionPins &pins);
-
     // Status
-    struct Status
-    {
-        Mode mode;
-        bool running;
-        int32_t encoder_position;
-        int32_t stepper_position;
-        int16_t spindle_rpm;
-        bool error;
-        const char *error_message;
-    };
     Status getStatus() const;
 
 private:
     // Components
     EncoderTimer _encoder;
-    STM32Step::Stepper *_stepper;
     SyncTimer _syncTimer;
+    STM32Step::Stepper *_stepper;
+
+    // Configuration
     MotionPins _pins;
+    Config _config;
+    Mode _currentMode;
 
     // State
-    Mode _currentMode;
-    bool _running;
-    bool _error;
+    volatile bool _running;
+    volatile bool _error;
     const char *_errorMsg;
-    Config _config;
 
-    // Internal methods
+    // Private methods
     void configureForMode(Mode mode);
     void handleError(const char *msg);
     void updateSyncParameters();

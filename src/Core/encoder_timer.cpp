@@ -28,30 +28,46 @@ bool EncoderTimer::begin()
     if (_initialized)
         return true;
 
+    SerialDebug.println("Starting encoder timer initialization...");
     instance = this;
 
     // Initialize components one by one with error checking
+    SerialDebug.println("Initializing GPIO...");
     if (!initGPIO())
     {
+        SerialDebug.println("GPIO initialization failed");
         return false;
     }
+    SerialDebug.println("GPIO initialized");
 
+    SerialDebug.println("Initializing Timer...");
     if (!initTimer())
     {
+        SerialDebug.println("Timer initialization failed");
         return false;
     }
+    SerialDebug.println("Timer initialized");
 
     // Enable timer update interrupt for overflow detection
+    SerialDebug.println("Enabling timer interrupts...");
+    if (HAL_TIM_Base_Start_IT(&htim2) != HAL_OK)
+    {
+        SerialDebug.println("Failed to start timer interrupts");
+        return false;
+    }
+    SerialDebug.println("Timer base started with interrupts");
+
     __HAL_TIM_ENABLE_IT(&htim2, TIM_IT_UPDATE);
-    HAL_NVIC_SetPriority(TIM2_IRQn, 1, 0);
-    HAL_NVIC_EnableIRQ(TIM2_IRQn);
+    SerialDebug.println("Timer update interrupt enabled");
 
     _initialized = true;
+    SerialDebug.println("Encoder timer initialization complete");
     return true;
 }
 
 bool EncoderTimer::initGPIO()
 {
+    SerialDebug.println("Enabling GPIO clock...");
     __HAL_RCC_GPIOA_CLK_ENABLE();
 
     GPIO_InitTypeDef gpio_config = {0};
@@ -61,12 +77,15 @@ bool EncoderTimer::initGPIO()
     gpio_config.Speed = GPIO_SPEED_FREQ_HIGH;
     gpio_config.Alternate = GPIO_AF1_TIM2;
 
+    SerialDebug.println("Configuring GPIO pins...");
     HAL_GPIO_Init(GPIOA, &gpio_config);
+    SerialDebug.println("GPIO pins configured");
     return true;
 }
 
 bool EncoderTimer::initTimer()
 {
+    SerialDebug.println("Enabling Timer2 clock...");
     __HAL_RCC_TIM2_CLK_ENABLE();
 
     htim2.Instance = TIM2;
@@ -87,16 +106,21 @@ bool EncoderTimer::initTimer()
     encoder_config.IC2Prescaler = TIM_ICPSC_DIV1;
     encoder_config.IC2Filter = 0xF;
 
+    SerialDebug.println("Initializing encoder timer...");
     if (HAL_TIM_Encoder_Init(&htim2, &encoder_config) != HAL_OK)
     {
+        SerialDebug.println("Timer initialization failed");
         return false;
     }
 
+    SerialDebug.println("Starting encoder timer...");
     if (HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL) != HAL_OK)
     {
+        SerialDebug.println("Timer start failed");
         return false;
     }
 
+    SerialDebug.println("Timer configuration complete");
     return true;
 }
 
@@ -128,7 +152,10 @@ int32_t EncoderTimer::getCount()
     if (!_initialized)
         return 0;
 
-    return (int32_t)__HAL_TIM_GET_COUNTER(&htim2);
+    __disable_irq();
+    int32_t count = (int32_t)__HAL_TIM_GET_COUNTER(&htim2);
+    __enable_irq();
+    return count;
 }
 
 void EncoderTimer::setSyncConfig(const SyncConfig &config)
@@ -148,9 +175,8 @@ EncoderTimer::SyncPosition EncoderTimer::getSyncPosition()
         return pos;
 
     __disable_irq();
-    _currentCount = getCount();
-    pos.encoder_count = _currentCount;
-    pos.required_steps = calculateRequiredSteps(_currentCount);
+    pos.encoder_count = getCount();
+    pos.required_steps = calculateRequiredSteps(pos.encoder_count);
     pos.timestamp = HAL_GetTick();
     pos.valid = !_error;
     __enable_irq();
@@ -189,10 +215,12 @@ float EncoderTimer::calculateSyncRatio() const
     return _syncConfig.thread_pitch / _syncConfig.leadscrew_pitch;
 }
 
-void EncoderTimer::updateCallback(void)
+void EncoderTimer::updateCallback()
 {
     if (instance)
+    {
         instance->handleOverflow();
+    }
 }
 
 void EncoderTimer::handleOverflow()
@@ -213,8 +241,7 @@ EncoderTimer::Position EncoderTimer::getPosition()
         return pos;
 
     __disable_irq();
-    _currentCount = getCount();
-    pos.count = _currentCount;
+    pos.count = getCount();
     pos.timestamp = HAL_GetTick();
     pos.direction = __HAL_TIM_IS_TIM_COUNTING_DOWN(&htim2);
     pos.rpm = calculateRPM();

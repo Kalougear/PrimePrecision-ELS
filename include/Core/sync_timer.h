@@ -35,13 +35,16 @@ public:
     bool hasError() const { return _error; }
     uint32_t getLastUpdateTime() const { return _lastUpdateTime; }
 
+    // New method to process sync requests outside interrupt context
+    void processSyncRequest();
+
     // For testing/debugging
     uint32_t getTimerFrequency() const { return _timerFrequency; }
     bool isInitialized() const { return _initialized; }
 
 protected:
-    // Timer callback
-    void handleSync();
+    // Timer interrupt handler - minimal processing
+    void handleInterrupt();
 
 private:
     // Hardware timer
@@ -69,4 +72,7 @@ private:
 
     // Static instance for callback
     static SyncTimer *instance;
+
+    // New sync request flag for interrupt handling
+    static volatile bool syncRequested;
 };

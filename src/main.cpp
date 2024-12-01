@@ -1,71 +1,184 @@
 #include <Arduino.h>
-#include "Application/MotionControl.h"
+#include "STM32Step.h"
 #include "Config/serial_debug.h"
-#include <STM32Step.h>
 #include "Core/system_clock.h"
+#include "Core/encoder_timer.h"
+#include <HardwareTimer.h>
 
-HardwareSerial SerialDebug(PA2 /* RX */, PA3 /* TX */);
-// Pin definitions for motion control
-const MotionControl::MotionPins motionPins = {
-    .step_pin = PE9,  // Your TIM1 PWM pin
-    .dir_pin = PE8,   // Direction pin
-    .enable_pin = PE7 // Enable pin
-};
+using namespace STM32Step;
 
-// Create motion control instance
-MotionControl motionControl(motionPins);
+// Serial for debugging
+HardwareSerial SerialDebug(PA3, PA2);
+
+// Pin definitions
+static const uint8_t k_step_pin = PinConfig::StepPin::PIN;
+static const uint8_t k_dir_pin = PinConfig::DirPin::PIN;
+static const uint8_t k_enable_pin = PinConfig::EnablePin::PIN;
+
+// Components
+Stepper *stepper = nullptr;
+EncoderTimer encoderTimer;
+HardwareTimer *timer6;
+
+// Tracking variables
+volatile uint32_t syncCount = 0;
+volatile int32_t previousEncoderPosition = 0;
+const uint32_t ENCODER_MAX_COUNT = 0x00ffffff; // 24-bit counter
+
+// Stepper and encoder parameters
+const uint16_t ENCODER_PPR = 1024;  // Encoder pulses per revolution
+const uint16_t STEPPER_SPR = 200;   // Stepper steps per revolution
+const uint16_t MICROSTEPS = 8;      // Match DIP switch setting of 1600/200 = 8
+const uint16_t QUADRATURE_MULT = 4; // Encoder quadrature multiplier
+
+// Calculate steps per encoder count for 1:1 ratio
+// We want (STEPPER_SPR * MICROSTEPS) steps to equal (ENCODER_PPR * QUADRATURE_MULT) encoder counts
+// So each encoder count should result in (STEPPER_SPR * MICROSTEPS) / (ENCODER_PPR * QUADRATURE_MULT) steps
+const float STEPS_PER_ENCODER_COUNT = ((float)STEPPER_SPR * MICROSTEPS) / (ENCODER_PPR * QUADRATURE_MULT);
+
+int32_t encoderToStepperPosition(int32_t encoderPos)
+{
+    return (int32_t)(encoderPos * STEPS_PER_ENCODER_COUNT);
+}
+
+void timerCallback()
+{
+    // Read current encoder position
+    EncoderTimer::Position encoderPos = encoderTimer.getPosition();
+
+    if (encoderPos.valid)
+    {
+        int32_t currentPosition = encoderPos.count;
+
+        // Update stepper target position
+        stepper->setTargetPosition(encoderToStepperPosition(currentPosition));
+
+        // Handle encoder overflow/underflow
+        if (currentPosition < previousEncoderPosition &&
+            (previousEncoderPosition - currentPosition) > ENCODER_MAX_COUNT / 2)
+        {
+            int32_t stepperAdjustment = encoderToStepperPosition(ENCODER_MAX_COUNT);
+            stepper->incrementCurrentPosition(stepperAdjustment);
+        }
+
+        if (currentPosition > previousEncoderPosition &&
+            (currentPosition - previousEncoderPosition) > ENCODER_MAX_COUNT / 2)
+        {
+            int32_t stepperAdjustment = encoderToStepperPosition(-ENCODER_MAX_COUNT);
+            stepper->incrementCurrentPosition(stepperAdjustment);
+        }
+
+        previousEncoderPosition = currentPosition;
+        syncCount++;
+    }
+}
 
 void setup()
 {
-    // 1. Initialize system clock first
-    // Initialize system clock
-    SystemClock::GetInstance().initialize(); // Remove the if check to avoid serial dependency
-
-    // 2. Initialize motion control
-    motionControl.begin(); // Remove the if check to avoid serial dependency
-
-    // Configure for 1:1 sync
-    MotionControl::Config config;
-    config.thread_pitch = 1.0f;       // 1mm thread pitch
-    config.leadscrew_pitch = 1.0f;    // 1mm leadscrew pitch
-    config.steps_per_rev = 200;       // Standard stepper steps/rev
-    config.microsteps = 16;           // Microstep setting
-    config.reverse_direction = false; // Normal direction
-    config.sync_frequency = 1000;     // 1kHz sync updates
-
-    motionControl.setConfig(config);
-    motionControl.setMode(MotionControl::Mode::THREADING);
-
-    // 3. Initialize serial last (optional now)
     SerialDebug.begin(115200);
-    delay(100); // Short delay to let serial stabilize
+    delay(1000);
+    SerialDebug.println("\n=== Clough42 ELS Implementation Test ===");
+
+    // Initialize system clock
+    if (!SystemClock::GetInstance().initialize())
+    {
+        SerialDebug.println("ERROR: Clock initialization failed!");
+        while (1)
+        {
+            delay(1000);
+        }
+    }
+
+    // Configure runtime parameters
+    RuntimeConfig::current_pulse_width = STEPPER_CYCLE_US; // Match Clough42 timing
+    RuntimeConfig::current_microsteps = MICROSTEPS;
+    RuntimeConfig::current_max_speed = 50000; // High max speed to allow fast catch-up
+
+    // Initialize encoder
+    SerialDebug.println("Initializing encoder...");
+    if (!encoderTimer.begin())
+    {
+        SerialDebug.println("ERROR: Encoder initialization failed!");
+        while (1)
+        {
+            delay(1000);
+        }
+    }
+    SerialDebug.println("Encoder initialized");
+
+    // Initialize timer control
+    TimerControl::init();
+    SerialDebug.println("Timer control initialized");
+
+    // Create and configure stepper
+    stepper = new Stepper(k_step_pin, k_dir_pin, k_enable_pin);
+    if (!stepper)
+    {
+        SerialDebug.println("ERROR: Stepper initialization failed!");
+        while (1)
+        {
+            delay(1000);
+        }
+    }
+
+    // Configure stepper
+    stepper->setMicrosteps(MICROSTEPS);
+    stepper->enable();
+    SerialDebug.println("Stepper initialized");
+
+    // Create and configure Timer6 for position updates
+    SerialDebug.println("Creating Timer6...");
+    timer6 = new HardwareTimer(TIM6);
+    if (!timer6)
+    {
+        SerialDebug.println("ERROR: Timer6 creation failed!");
+        while (1)
+        {
+            delay(1000);
+        }
+    }
+
+    // Configure Timer6 for 1kHz position updates
+    timer6->setPrescaleFactor(1);
+    timer6->setOverflow(1000, HERTZ_FORMAT);
+    timer6->attachInterrupt(timerCallback);
+    timer6->resume();
+    SerialDebug.println("Timer6 initialized at 1kHz");
+
+    // Initialize tracking variables
+    previousEncoderPosition = encoderTimer.getPosition().count;
+
+    SerialDebug.println("System initialization complete");
+    SerialDebug.print("Using ratio: ");
+    SerialDebug.print(STEPS_PER_ENCODER_COUNT, 4);
+    SerialDebug.println(" stepper steps per encoder count");
+    SerialDebug.print("Stepper microsteps: ");
+    SerialDebug.println(MICROSTEPS);
 }
 
 void loop()
 {
-    static bool motionStarted = false;
-    static uint32_t lastStatusUpdate = 0;
-    const uint32_t STATUS_INTERVAL = 1000; // Status update every 1 second
+    static uint32_t lastPrint = 0;
+    const uint32_t PRINT_INTERVAL = 1000;
 
-    // Start motion after initialization
-    if (!motionStarted)
+    if (millis() - lastPrint >= PRINT_INTERVAL)
     {
-        motionControl.startMotion();
-        motionStarted = true;
+        EncoderTimer::Position pos = encoderTimer.getPosition();
+        auto status = stepper->getStatus();
+
+        SerialDebug.print("Status - Encoder: ");
+        SerialDebug.print(pos.count);
+        SerialDebug.print(" Stepper: ");
+        SerialDebug.print(status.currentPosition);
+        SerialDebug.print(" Running: ");
+        SerialDebug.print(status.running ? "Yes" : "No");
+        SerialDebug.print(" RPM: ");
+        SerialDebug.println(pos.rpm);
+
+        // Reset counters
+        syncCount = 0;
+        lastPrint = millis();
     }
 
-    // Only print status if serial is actually available
-    if (SerialDebug && (millis() - lastStatusUpdate >= STATUS_INTERVAL))
-    {
-        MotionControl::Status status = motionControl.getStatus();
-        if (status.error)
-        {
-            motionControl.stopMotion();
-            while (1)
-            {
-                delay(1000); // Add a delay in the error loop
-            }
-        }
-        lastStatusUpdate = millis();
-    }
+    delay(1);
 }

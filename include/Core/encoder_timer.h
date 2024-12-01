@@ -5,12 +5,6 @@
 #include "Config/encoder_config.h"
 #include <HardwareTimer.h>
 
-// Forward declare interrupt handler
-extern "C"
-{
-    void TIM2_IRQHandler(void);
-}
-
 class EncoderTimer
 {
 public:
@@ -64,6 +58,7 @@ public:
     SyncPosition getSyncPosition();
     float calculateStepperFrequency(int16_t rpm);
 
+    // Timer access methods
     uint32_t getRawCounter() const
     {
         return __HAL_TIM_GET_COUNTER(&htim2);
@@ -79,8 +74,11 @@ public:
         return htim2.Instance->CR1;
     }
 
-protected:
-    friend void TIM2_IRQHandler(void);
+    // Get timer handle for interrupt handler
+    TIM_HandleTypeDef *getTimerHandle() { return &htim2; }
+
+    // Static callback for timer interrupts
+    static void updateCallback();
 
 private:
     // Hardware handle
@@ -106,9 +104,6 @@ private:
     int32_t calculateRequiredSteps(int32_t encoderCount);
     float calculateSyncRatio() const;
     void handleOverflow();
-
-    // Callback
-    static void updateCallback();
 
     // Static instance for callbacks
     static EncoderTimer *instance;

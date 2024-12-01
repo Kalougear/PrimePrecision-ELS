@@ -10,138 +10,103 @@ namespace STM32Step
           _enablePin(enablePin),
           _currentPosition(0),
           _targetPosition(0),
-          _currentSpeed(0),
           _enabled(false),
           _running(false),
           _currentDirection(false),
-          _directionChanged(false),
-          _mode(OperationMode::TURNING)
+          state(0)
     {
-        // Initialize configuration with runtime defaults
-        _config.microsteps = RuntimeConfig::current_microsteps;
-        _config.maxSpeed = RuntimeConfig::current_max_speed;
-        _config.mode = OperationMode::TURNING;
-        _stepsPerFullStep = _config.microsteps;
-
         initPins();
     }
 
-    void Stepper::setRelativePosition(int32_t steps)
+    void Stepper::ISR(void)
     {
-        if (!_enabled)
+        if (!_enabled || !_running)
         {
-            SerialDebug.println("ERROR: Motor not enabled");
+            // Reset state machine when not running
+            state = 0;
+            GPIO_CLEAR_STEP();
             return;
         }
 
-        if (steps == 0)
+        // Check if we need to move
+        int32_t positionDifference = _targetPosition - _currentPosition;
+        if (positionDifference == 0)
         {
-            return;
-        }
-
-        // Set target position
-        _targetPosition = _currentPosition + steps;
-
-        // Set direction
-        bool newDirection = steps >= 0;
-        if (_currentDirection != newDirection)
-        {
-            _currentDirection = newDirection;
-            setDirection(_currentDirection);
-            delayMicroseconds(TimingConfig::DIR_SETUP);
-        }
-
-        // Start motion if not already running
-        if (!_running)
-        {
-            _running = true;
-            TimerControl::start(this);
-        }
-    }
-
-    bool Stepper::moveSteps(int32_t steps, bool wait)
-    {
-        if (!_enabled)
-        {
-            SerialDebug.println("ERROR: Motor not enabled");
-            return false;
-        }
-
-        if (steps == 0)
-        {
-            SerialDebug.println("Warning: Zero steps requested");
-            return true;
-        }
-
-        // Stop any ongoing movement
-        if (_running)
-        {
-            TimerControl::stop();
             _running = false;
+            state = 0;
+            GPIO_CLEAR_STEP();
+            return;
         }
 
-        // Set target position
-        _targetPosition = _currentPosition + steps;
+        // Determine direction before switch
+        bool moveForward = positionDifference > 0;
 
-        // Set direction
-        bool newDirection = steps >= 0;
-        if (_currentDirection != newDirection)
+        // Simple position-based state machine
+        switch (state)
         {
-            _currentDirection = newDirection;
-            setDirection(_currentDirection);
-            delayMicroseconds(TimingConfig::DIR_SETUP);
-        }
-
-        // Start motion
-        _running = true;
-        TimerControl::start(this);
-
-        if (wait)
+        case 0: // Check position and direction
         {
-            const uint32_t MOVEMENT_TIMEOUT = 10000; // 10 seconds timeout
-            const uint32_t STATUS_INTERVAL = 100;    // Status update every 100ms
-            uint32_t lastPrint = 0;
-            uint32_t startTime = millis();
-
-            while (_running && !TimerControl::isTargetPositionReached())
+            // If direction change needed
+            if (moveForward != _currentDirection)
             {
-                uint32_t currentTime = millis();
-
-                // Print status updates periodically
-                if (currentTime - lastPrint >= STATUS_INTERVAL)
-                {
-                    SerialDebug.print("Position: ");
-                    SerialDebug.print(_currentPosition);
-                    SerialDebug.print(" Target: ");
-                    SerialDebug.print(_targetPosition);
-                    SerialDebug.print(" Speed: ");
-                    SerialDebug.println(_currentSpeed);
-                    lastPrint = currentTime;
-                }
-
-                // Check for timeout
-                if (currentTime - startTime > MOVEMENT_TIMEOUT)
-                {
-                    SerialDebug.println("ERROR: Movement timeout!");
-                    stop();
-                    return false;
-                }
-                delay(1);
+                _currentDirection = moveForward;
+                if (moveForward)
+                    GPIO_SET_DIRECTION();
+                else
+                    GPIO_CLEAR_DIRECTION();
+                state = 1; // Go to direction change delay
             }
-            return TimerControl::isTargetPositionReached();
+            else
+            {
+                GPIO_SET_STEP(); // Start step pulse
+                state = 2;
+            }
         }
-        return true;
+        break;
+
+        case 1:        // Direction change delay
+            state = 0; // Return to position check next cycle
+            break;
+
+        case 2:                // Step pulse high
+            GPIO_CLEAR_STEP(); // End step pulse
+            if (_currentDirection)
+                _currentPosition++;
+            else
+                _currentPosition--;
+            state = 0; // Return to position check
+            break;
+        }
     }
 
-    void Stepper::setSpeed(uint32_t speed)
+    void Stepper::setTargetPosition(int32_t position)
     {
-        speed = validateSpeed(speed);
-        _currentSpeed = speed;
-
-        if (_enabled && _running)
+        // Only start running if there's actually a position difference
+        if (position != _currentPosition)
         {
-            TimerControl::updateTimerFrequency(speed);
+            _targetPosition = position;
+            if (!_running)
+            {
+                _running = true;
+                TimerControl::start(this);
+            }
         }
+    }
+
+    void Stepper::setRelativePosition(int32_t delta)
+    {
+        if (delta != 0)
+        {
+            setTargetPosition(_targetPosition + delta);
+        }
+    }
+
+    void Stepper::stop()
+    {
+        _running = false;
+        state = 0;
+        GPIO_CLEAR_STEP();
+        TimerControl::stop();
     }
 
     void Stepper::enable()
@@ -153,6 +118,7 @@ namespace STM32Step
                           RuntimeConfig::invert_enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
         _enabled = true;
         _running = false;
+        state = 0;
     }
 
     void Stepper::disable()
@@ -163,61 +129,12 @@ namespace STM32Step
         stop();
         HAL_GPIO_WritePin(PinConfig::EnablePin::PORT, GPIO_PIN_7, GPIO_PIN_SET);
         _enabled = false;
-        _running = false;
-    }
-
-    void Stepper::stop()
-    {
-        if (!_running)
-            return;
-
-        _running = false;
-        TimerControl::stop();
-        // Don't reset _currentSpeed here to preserve the last set speed
-    }
-
-    void Stepper::initPins()
-    {
-        __HAL_RCC_GPIOE_CLK_ENABLE();
-        GPIO_InitTypeDef GPIO_InitStruct = {0};
-
-        // Configure direction pin
-        GPIO_InitStruct.Pin = 1 << (_dirPin & 0x0F);
-        GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-
-        // Initialize direction pin
-        HAL_GPIO_Init(PinConfig::DirPin::PORT, &GPIO_InitStruct);
-
-        // Configure enable pin
-        GPIO_InitStruct.Pin = 1 << (_enablePin & 0x0F);
-        HAL_GPIO_Init(PinConfig::EnablePin::PORT, &GPIO_InitStruct);
-
-        // Set initial pin states
-        HAL_GPIO_WritePin(PinConfig::DirPin::PORT,
-                          1 << (_dirPin & 0x0F),
-                          GPIO_PIN_RESET);
-
-        HAL_GPIO_WritePin(PinConfig::EnablePin::PORT,
-                          1 << (_enablePin & 0x0F),
-                          RuntimeConfig::invert_enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    }
-
-    void Stepper::setOperationMode(OperationMode mode)
-    {
-        if (static_cast<int>(_mode) == static_cast<int>(mode))
-            return;
-
-        _mode = mode;
-        _config.mode = mode;
-        enforceModeLimits();
     }
 
     void Stepper::setMicrosteps(uint32_t microsteps)
     {
         // Validate microstep values
-        static const uint32_t validMicrosteps[] = {1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 1600};
+        static const uint32_t validMicrosteps[] = {1, 2, 4, 8, 16, 32, 64, 128, 256};
         bool isValid = false;
 
         for (uint32_t valid : validMicrosteps)
@@ -232,78 +149,57 @@ namespace STM32Step
         if (!isValid)
             return;
 
-        _config.microsteps = microsteps;
         RuntimeConfig::current_microsteps = microsteps;
-        _stepsPerFullStep = microsteps;
     }
 
-    void Stepper::setMaxSpeed(uint32_t speed)
+    void Stepper::initPins()
     {
-        if (speed >= MotorDefaults::MIN_FREQ && speed <= MotorDefaults::MAX_FREQ)
-        {
-            _config.maxSpeed = speed;
-            RuntimeConfig::current_max_speed = speed;
-            enforceModeLimits();
-        }
-    }
+        __HAL_RCC_GPIOE_CLK_ENABLE();
+        GPIO_InitTypeDef GPIO_InitStruct = {0};
 
-    void Stepper::enforceModeLimits()
-    {
-        uint32_t modeLimit = calculateMaxSpeedForMode();
+        // Configure step pin as normal GPIO output
+        GPIO_InitStruct.Pin = 1 << (_stepPin & 0x0F);
+        GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+        GPIO_InitStruct.Pull = GPIO_NOPULL;
+        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+        HAL_GPIO_Init(PinConfig::StepPin::PORT, &GPIO_InitStruct);
 
-        if (_config.maxSpeed > modeLimit)
-        {
-            _config.maxSpeed = modeLimit;
-            RuntimeConfig::current_max_speed = modeLimit;
-        }
-    }
+        // Configure direction pin
+        GPIO_InitStruct.Pin = 1 << (_dirPin & 0x0F);
+        HAL_GPIO_Init(PinConfig::DirPin::PORT, &GPIO_InitStruct);
 
-    uint32_t Stepper::calculateMaxSpeedForMode() const
-    {
-        uint32_t modeLimit;
+        // Configure enable pin
+        GPIO_InitStruct.Pin = 1 << (_enablePin & 0x0F);
+        HAL_GPIO_Init(PinConfig::EnablePin::PORT, &GPIO_InitStruct);
 
-        switch (_mode)
-        {
-        case OperationMode::THREADING:
-            modeLimit = OperationLimits::THREADING_MAX;
-            break;
-        case OperationMode::TURNING:
-            modeLimit = OperationLimits::TURNING_MAX;
-            break;
-        case OperationMode::RAPIDS:
-            modeLimit = OperationLimits::RAPIDS_MAX;
-            break;
-        default:
-            modeLimit = _config.maxSpeed;
-        }
-
-        return (modeLimit < _config.maxSpeed) ? modeLimit : _config.maxSpeed;
-    }
-
-    uint32_t Stepper::validateSpeed(uint32_t speed) const
-    {
-        if (speed > RuntimeConfig::current_max_speed)
-            return RuntimeConfig::current_max_speed;
-        if (speed < MotorDefaults::MIN_FREQ)
-            return MotorDefaults::MIN_FREQ;
-        return speed;
-    }
-
-    void Stepper::setDirection(bool dir)
-    {
-        bool finalDir = RuntimeConfig::invert_direction ? !dir : dir;
-
+        // Set initial pin states
+        GPIO_CLEAR_STEP();
         HAL_GPIO_WritePin(PinConfig::DirPin::PORT,
                           1 << (_dirPin & 0x0F),
-                          finalDir ? GPIO_PIN_SET : GPIO_PIN_RESET);
+                          GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(PinConfig::EnablePin::PORT,
+                          1 << (_enablePin & 0x0F),
+                          RuntimeConfig::invert_enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    }
 
-        _directionChanged = true;
+    void Stepper::GPIO_SET_STEP()
+    {
+        HAL_GPIO_WritePin(PinConfig::StepPin::PORT, 1 << (_stepPin & 0x0F), GPIO_PIN_SET);
+    }
 
-        // Wait for direction setup time
-        if (_directionChanged)
-        {
-            delayMicroseconds(TimingConfig::DIR_SETUP);
-        }
+    void Stepper::GPIO_CLEAR_STEP()
+    {
+        HAL_GPIO_WritePin(PinConfig::StepPin::PORT, 1 << (_stepPin & 0x0F), GPIO_PIN_RESET);
+    }
+
+    void Stepper::GPIO_SET_DIRECTION()
+    {
+        HAL_GPIO_WritePin(PinConfig::DirPin::PORT, 1 << (_dirPin & 0x0F), GPIO_PIN_SET);
+    }
+
+    void Stepper::GPIO_CLEAR_DIRECTION()
+    {
+        HAL_GPIO_WritePin(PinConfig::DirPin::PORT, 1 << (_dirPin & 0x0F), GPIO_PIN_RESET);
     }
 
     StepperStatus Stepper::getStatus() const
@@ -313,9 +209,14 @@ namespace STM32Step
         status.running = _running;
         status.currentPosition = _currentPosition;
         status.targetPosition = _targetPosition;
-        status.currentSpeed = _currentSpeed;
         status.stepsRemaining = abs(_targetPosition - _currentPosition);
         return status;
+    }
+
+    void Stepper::incrementCurrentPosition(int32_t increment)
+    {
+        _currentPosition += increment;
+        _targetPosition += increment;
     }
 
     Stepper::~Stepper()

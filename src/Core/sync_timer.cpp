@@ -4,6 +4,9 @@
 // Static instance initialization
 SyncTimer *SyncTimer::instance = nullptr;
 
+// Initialize static sync request flag
+volatile bool SyncTimer::syncRequested = false;
+
 SyncTimer::SyncTimer() : _timer(nullptr),
                          _enabled(false),
                          _error(false),
@@ -68,25 +71,21 @@ bool SyncTimer::initTimer()
     _timer->setPrescaleFactor(prescaler);
     _timer->setOverflow(period);
 
-    // Set callback
+    // Set callback - now just sets a flag
     _timer->attachInterrupt([this]()
-                            { this->handleSync(); });
-
-    // Set interrupt priority
-    _timer->setInterruptPriority(2, 0); // Lower priority than stepper/encoder
+                            { this->handleInterrupt(); });
 
     return true;
 }
 
 void SyncTimer::calculateTimerParameters(uint32_t freq, uint32_t &prescaler, uint32_t &period)
 {
-    uint32_t timerClock = SystemCoreClock; // H743 runs at max clock
+    uint32_t timerClock = SystemCoreClock;
     uint32_t targetTicks = timerClock / freq;
 
     prescaler = 1;
     period = targetTicks;
 
-    // Find suitable prescaler while keeping period in 16-bit range
     while (period > 0xFFFF)
     {
         prescaler++;
@@ -149,15 +148,27 @@ void SyncTimer::setSyncFrequency(uint32_t freq)
     _timerFrequency = freq;
 }
 
-void SyncTimer::handleSync()
+// Minimal interrupt handler - just sets a flag
+void SyncTimer::handleInterrupt()
 {
-    if (!_enabled || !_encoder || !_stepper)
+    syncRequested = true;
+}
+
+// Process sync outside interrupt context
+void SyncTimer::processSyncRequest()
+{
+    if (!syncRequested || !_enabled || !_encoder || !_stepper)
     {
         return;
     }
 
     static int32_t lastEncoderCount = 0;
+
+    // Get encoder count with interrupts disabled
+    __disable_irq();
     int32_t currentCount = _encoder->getCount();
+    __enable_irq();
+
     int32_t encoderDelta = currentCount - lastEncoderCount;
 
     if (encoderDelta != 0)
@@ -168,6 +179,7 @@ void SyncTimer::handleSync()
     }
 
     _lastUpdateTime = HAL_GetTick();
+    syncRequested = false;
 }
 
 float SyncTimer::calculateSyncRatio() const

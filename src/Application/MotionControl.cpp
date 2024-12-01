@@ -129,8 +129,6 @@ void MotionControl::emergencyStop()
 MotionControl::Status MotionControl::getStatus() const
 {
     Status status;
-    status.mode = _currentMode;
-    status.running = _running;
     status.encoder_position = const_cast<EncoderTimer &>(_encoder).getCount();
     status.stepper_position = _stepper ? _stepper->getCurrentPosition() : 0;
     status.spindle_rpm = const_cast<EncoderTimer &>(_encoder).getRPM();
@@ -182,5 +180,14 @@ void MotionControl::updateSyncParameters()
         syncConfig.update_freq = _config.sync_frequency;
         syncConfig.reverse_direction = _config.reverse_direction;
         _syncTimer.setConfig(syncConfig);
+    }
+}
+
+// Process sync requests outside interrupt context
+void MotionControl::update()
+{
+    if (_running && !_error)
+    {
+        _syncTimer.processSyncRequest();
     }
 }

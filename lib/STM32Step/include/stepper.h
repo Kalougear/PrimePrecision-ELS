@@ -10,6 +10,8 @@
 namespace STM32Step
 {
     class Stepper;
+    class TimerControl; // Forward declaration
+
     struct StepperStatus
     {
         bool enabled;
@@ -38,6 +40,8 @@ namespace STM32Step
         void setSpeed(uint32_t speed);
         void setTargetPosition(int32_t position);
         void setRelativePosition(int32_t steps);
+        void incrementCurrentPosition(int32_t increment);
+        void ISR(void);
 
         // Configuration
         void setOperationMode(OperationMode mode);
@@ -55,6 +59,7 @@ namespace STM32Step
 
         // Getters
         int32_t getCurrentPosition() const { return _currentPosition; }
+        int32_t getTargetPosition() const { return _targetPosition; }
         uint32_t getCurrentSpeed() const { return _currentSpeed; }
         OperationMode getOperationMode() const { return _config.mode; }
         uint32_t getMaxSpeed() const { return _config.maxSpeed; }
@@ -62,7 +67,7 @@ namespace STM32Step
         uint32_t calculateMaxSpeedForMode() const;
 
     protected:
-        friend class TimerControl;
+        friend class TimerControl; // Allow TimerControl to access protected members
 
         // Hardware pins
         const uint8_t _stepPin;
@@ -91,6 +96,15 @@ namespace STM32Step
         uint32_t validateSpeed(uint32_t speed) const;
         void enforceModeLimits();
         uint32_t _stepsPerFullStep;
+
+        // State machine state
+        uint16_t state;
+
+        // GPIO manipulation methods
+        void GPIO_SET_STEP();
+        void GPIO_CLEAR_STEP();
+        void GPIO_SET_DIRECTION();
+        void GPIO_CLEAR_DIRECTION();
     };
 
 } // namespace STM32Step

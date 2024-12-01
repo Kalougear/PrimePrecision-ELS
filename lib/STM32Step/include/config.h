@@ -4,6 +4,7 @@
 
 namespace STM32Step
 {
+#define STEPPER_CYCLE_US 10 // 5 microseconds per cycle
     // Operation Mode Definition
     enum class OperationMode
     {
