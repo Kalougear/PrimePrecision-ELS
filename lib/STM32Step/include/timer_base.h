@@ -8,6 +8,27 @@ namespace STM32Step
 {
     class Stepper;
 
+    /**
+     * @brief Base timer class for stepper control
+     */
+    class TimerBase : public HardwareTimer
+    {
+    public:
+        TimerBase() : HardwareTimer(TIM1) {}
+        virtual ~TimerBase() = default;
+
+        virtual void start() { resume(); }
+        virtual void stop() { pause(); }
+        virtual void setFrequency(uint32_t freq);
+
+    protected:
+        friend class Stepper;
+        void configureForStepper();
+    };
+
+    /**
+     * @brief Timer control interface
+     */
     class TimerControl
     {
     public:

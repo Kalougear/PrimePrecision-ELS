@@ -1,5 +1,6 @@
 #include "stepper.h"
 #include "Config/serial_debug.h"
+#include "Config/system_config.h"
 #include <algorithm>
 
 namespace STM32Step
@@ -13,6 +14,7 @@ namespace STM32Step
           _enabled(false),
           _running(false),
           _currentDirection(false),
+          _operationMode(OperationMode::IDLE),
           state(0)
     {
         initPins();
@@ -109,13 +111,20 @@ namespace STM32Step
         TimerControl::stop();
     }
 
+    void Stepper::emergencyStop()
+    {
+        stop();
+        disable();
+        TimerControl::emergencyStopRequest();
+    }
+
     void Stepper::enable()
     {
         if (_enabled)
             return;
 
         HAL_GPIO_WritePin(PinConfig::EnablePin::PORT, GPIO_PIN_7,
-                          RuntimeConfig::invert_enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
+                          SystemConfig::RuntimeConfig::Stepper::invert_enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
         _enabled = true;
         _running = false;
         state = 0;
@@ -149,7 +158,7 @@ namespace STM32Step
         if (!isValid)
             return;
 
-        RuntimeConfig::current_microsteps = microsteps;
+        SystemConfig::RuntimeConfig::Stepper::microsteps = microsteps;
     }
 
     void Stepper::initPins()
@@ -179,7 +188,7 @@ namespace STM32Step
                           GPIO_PIN_RESET);
         HAL_GPIO_WritePin(PinConfig::EnablePin::PORT,
                           1 << (_enablePin & 0x0F),
-                          RuntimeConfig::invert_enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
+                          SystemConfig::RuntimeConfig::Stepper::invert_enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
     }
 
     void Stepper::GPIO_SET_STEP()

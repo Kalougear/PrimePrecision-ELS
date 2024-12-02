@@ -3,14 +3,15 @@
 #include "Config/serial_debug.h"
 #include "Core/system_clock.h"
 #include "Core/encoder_timer.h"
+#include "Config/system_config.h"
 #include <HardwareTimer.h>
 
-using namespace STM32Step;
-
-// Serial for debugging
 HardwareSerial SerialDebug(PA3, PA2);
 
-// Pin definitions
+using namespace STM32Step;
+using namespace SystemConfig;
+
+// Pin definitions from STM32Step PinConfig
 static const uint8_t k_step_pin = PinConfig::StepPin::PIN;
 static const uint8_t k_dir_pin = PinConfig::DirPin::PIN;
 static const uint8_t k_enable_pin = PinConfig::EnablePin::PIN;
@@ -23,27 +24,35 @@ HardwareTimer *timer6;
 // Tracking variables
 volatile uint32_t syncCount = 0;
 volatile int32_t previousEncoderPosition = 0;
-const uint32_t ENCODER_MAX_COUNT = 0x00ffffff; // 24-bit counter
+const uint32_t ENCODER_MAX_COUNT = 0xFFFFFFFF; // 32-bit counter
 
-// Stepper and encoder parameters
-const uint16_t ENCODER_PPR = 1024;  // Encoder pulses per revolution
-const uint16_t STEPPER_SPR = 200;   // Stepper steps per revolution
-const uint16_t MICROSTEPS = 8;      // Match DIP switch setting of 1600/200 = 8
-const uint16_t QUADRATURE_MULT = 4; // Encoder quadrature multiplier
-
-// Calculate steps per encoder count for 1:1 ratio
-// We want (STEPPER_SPR * MICROSTEPS) steps to equal (ENCODER_PPR * QUADRATURE_MULT) encoder counts
-// So each encoder count should result in (STEPPER_SPR * MICROSTEPS) / (ENCODER_PPR * QUADRATURE_MULT) steps
-const float STEPS_PER_ENCODER_COUNT = ((float)STEPPER_SPR * MICROSTEPS) / (ENCODER_PPR * QUADRATURE_MULT);
+float calculateStepsPerEncoderCount()
+{
+    return ((float)Limits::Stepper::STEPS_PER_REV * RuntimeConfig::Stepper::microsteps) /
+           (RuntimeConfig::Encoder::ppr * Limits::Encoder::QUADRATURE_MULT);
+}
 
 int32_t encoderToStepperPosition(int32_t encoderPos)
 {
-    return (int32_t)(encoderPos * STEPS_PER_ENCODER_COUNT);
+    return (int32_t)(encoderPos * calculateStepsPerEncoderCount());
+}
+
+void updateSyncFrequency(uint32_t newFreq)
+{
+    RuntimeConfig::Motion::sync_frequency = newFreq;
+
+    if (timer6)
+    {
+        timer6->setPrescaleFactor(1);
+        timer6->setOverflow(newFreq, HERTZ_FORMAT);
+        SerialDebug.print("Sync frequency updated to: ");
+        SerialDebug.print(newFreq);
+        SerialDebug.println(" Hz");
+    }
 }
 
 void timerCallback()
 {
-    // Read current encoder position
     EncoderTimer::Position encoderPos = encoderTimer.getPosition();
 
     if (encoderPos.valid)
@@ -78,6 +87,19 @@ void setup()
     SerialDebug.begin(115200);
     delay(1000);
     SerialDebug.println("\n=== Clough42 ELS Implementation Test ===");
+    SerialDebug.println("Commands:");
+    SerialDebug.println("1 - Set 1kHz sync frequency");
+    SerialDebug.println("2 - Set 2kHz sync frequency");
+    SerialDebug.println("3 - Set 5kHz sync frequency");
+    SerialDebug.println("4 - Set 10kHz sync frequency");
+    SerialDebug.println("5 - Set 20kHz sync frequency");
+    SerialDebug.println("6 - Set 30kHz sync frequency");
+    SerialDebug.println();
+
+    // Set initial configuration values
+    RuntimeConfig::Encoder::ppr = Limits::Encoder::DEFAULT_PPR;
+    RuntimeConfig::Stepper::microsteps = Limits::Stepper::DEFAULT_MICROSTEPS;
+    RuntimeConfig::Motion::sync_frequency = Limits::Motion::DEFAULT_SYNC_FREQ;
 
     // Initialize system clock
     if (!SystemClock::GetInstance().initialize())
@@ -88,11 +110,6 @@ void setup()
             delay(1000);
         }
     }
-
-    // Configure runtime parameters
-    RuntimeConfig::current_pulse_width = STEPPER_CYCLE_US; // Match Clough42 timing
-    RuntimeConfig::current_microsteps = MICROSTEPS;
-    RuntimeConfig::current_max_speed = 50000; // High max speed to allow fast catch-up
 
     // Initialize encoder
     SerialDebug.println("Initializing encoder...");
@@ -121,8 +138,8 @@ void setup()
         }
     }
 
-    // Configure stepper
-    stepper->setMicrosteps(MICROSTEPS);
+    // Configure stepper using system config values
+    stepper->setMicrosteps(RuntimeConfig::Stepper::microsteps);
     stepper->enable();
     SerialDebug.println("Stepper initialized");
 
@@ -138,22 +155,28 @@ void setup()
         }
     }
 
-    // Configure Timer6 for 1kHz position updates
-    timer6->setPrescaleFactor(1);
-    timer6->setOverflow(1000, HERTZ_FORMAT);
+    // Configure Timer6 using system config frequency
+    updateSyncFrequency(RuntimeConfig::Motion::sync_frequency);
     timer6->attachInterrupt(timerCallback);
     timer6->resume();
-    SerialDebug.println("Timer6 initialized at 1kHz");
 
     // Initialize tracking variables
     previousEncoderPosition = encoderTimer.getPosition().count;
 
-    SerialDebug.println("System initialization complete");
-    SerialDebug.print("Using ratio: ");
-    SerialDebug.print(STEPS_PER_ENCODER_COUNT, 4);
-    SerialDebug.println(" stepper steps per encoder count");
-    SerialDebug.print("Stepper microsteps: ");
-    SerialDebug.println(MICROSTEPS);
+    // Print configuration summary
+    SerialDebug.println("\nSystem Configuration:");
+    SerialDebug.print("Encoder PPR: ");
+    SerialDebug.println(RuntimeConfig::Encoder::ppr);
+    SerialDebug.print("Stepper Steps/Rev: ");
+    SerialDebug.println(Limits::Stepper::STEPS_PER_REV);
+    SerialDebug.print("Microsteps: ");
+    SerialDebug.println(RuntimeConfig::Stepper::microsteps);
+    SerialDebug.print("Steps per encoder count: ");
+    SerialDebug.println(calculateStepsPerEncoderCount(), 4);
+    SerialDebug.print("Initial sync frequency: ");
+    SerialDebug.print(RuntimeConfig::Motion::sync_frequency);
+    SerialDebug.println(" Hz");
+    SerialDebug.println("\nSystem ready!\n");
 }
 
 void loop()
@@ -161,6 +184,34 @@ void loop()
     static uint32_t lastPrint = 0;
     const uint32_t PRINT_INTERVAL = 1000;
 
+    // Check for serial input
+    if (SerialDebug.available())
+    {
+        char cmd = SerialDebug.read();
+        switch (cmd)
+        {
+        case '1':
+            updateSyncFrequency(1000); // 1kHz
+            break;
+        case '2':
+            updateSyncFrequency(2000); // 2kHz
+            break;
+        case '3':
+            updateSyncFrequency(5000); // 5kHz
+            break;
+        case '4':
+            updateSyncFrequency(10000); // 10kHz
+            break;
+        case '5':
+            updateSyncFrequency(20000); // 10kHz
+            break;
+        case '6':
+            updateSyncFrequency(30000); // 10kHz
+            break;
+        }
+    }
+
+    // Status update
     if (millis() - lastPrint >= PRINT_INTERVAL)
     {
         EncoderTimer::Position pos = encoderTimer.getPosition();
@@ -173,9 +224,11 @@ void loop()
         SerialDebug.print(" Running: ");
         SerialDebug.print(status.running ? "Yes" : "No");
         SerialDebug.print(" RPM: ");
-        SerialDebug.println(pos.rpm);
+        SerialDebug.print(pos.rpm);
+        SerialDebug.print(" Sync Freq: ");
+        SerialDebug.print(RuntimeConfig::Motion::sync_frequency);
+        SerialDebug.println(" Hz");
 
-        // Reset counters
         syncCount = 0;
         lastPrint = millis();
     }

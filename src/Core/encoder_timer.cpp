@@ -1,6 +1,7 @@
-// src/Core/encoder_timer.cpp
+// Replace EncoderConfig with SystemConfig in the includes
 #include "Core/encoder_timer.h"
 #include "Config/serial_debug.h"
+#include "Config/system_config.h" // Add this include
 
 EncoderTimer *EncoderTimer::instance = nullptr;
 
@@ -198,7 +199,7 @@ float EncoderTimer::calculateStepperFrequency(int16_t rpm)
 
 int32_t EncoderTimer::calculateRequiredSteps(int32_t encoderCount)
 {
-    int32_t counts_per_rev = EncoderConfig::RuntimeConfig::ppr * 4;
+    int32_t counts_per_rev = SystemConfig::RuntimeConfig::Encoder::ppr * 4;
     float sync_ratio = calculateSyncRatio();
 
     float steps_per_count = (_syncConfig.stepper_steps * _syncConfig.microsteps * sync_ratio) /
@@ -267,8 +268,9 @@ int16_t EncoderTimer::calculateRPM()
     lastCount = currentCount;
     lastTime = currentTime;
 
+    // Change this line to use SystemConfig instead of EncoderConfig
     return ((int32_t)(deltaCounts * 15000)) /
-           (EncoderConfig::RuntimeConfig::ppr * deltaTime);
+           (SystemConfig::RuntimeConfig::Encoder::ppr * deltaTime);
 }
 
 int16_t EncoderTimer::getRPM()

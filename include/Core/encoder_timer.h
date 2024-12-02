@@ -2,7 +2,6 @@
 #pragma once
 
 #include <Arduino.h>
-#include "Config/encoder_config.h"
 #include <HardwareTimer.h>
 
 class EncoderTimer
