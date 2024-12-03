@@ -26,6 +26,20 @@ volatile uint32_t syncCount = 0;
 volatile int32_t previousEncoderPosition = 0;
 const uint32_t ENCODER_MAX_COUNT = 0xFFFFFFFF; // 32-bit counter
 
+float calculateMaxRPM(uint32_t syncFreq)
+{
+    // Calculate max steps per second at current sync frequency
+    float maxStepsPerSecond = syncFreq;
+
+    // Calculate revolutions per second
+    // Steps needed for one rev = STEPS_PER_REV * microsteps * 2 (mechanical ratio)
+    float stepsPerRev = Limits::Stepper::STEPS_PER_REV * RuntimeConfig::Stepper::microsteps * 2;
+    float maxRevsPerSecond = maxStepsPerSecond / stepsPerRev;
+
+    // Convert to RPM
+    return maxRevsPerSecond * 60;
+}
+
 float calculateStepsPerEncoderCount()
 {
     return ((float)Limits::Stepper::STEPS_PER_REV * RuntimeConfig::Stepper::microsteps) /
@@ -94,6 +108,7 @@ void setup()
     SerialDebug.println("4 - Set 10kHz sync frequency");
     SerialDebug.println("5 - Set 20kHz sync frequency");
     SerialDebug.println("6 - Set 30kHz sync frequency");
+    SerialDebug.println("7 - Set 50kHz sync frequency");
     SerialDebug.println();
 
     // Set initial configuration values
@@ -208,6 +223,9 @@ void loop()
         case '6':
             updateSyncFrequency(30000); // 10kHz
             break;
+        case '7':
+            updateSyncFrequency(50000); // 10kHz
+            break;
         }
     }
 
@@ -217,14 +235,19 @@ void loop()
         EncoderTimer::Position pos = encoderTimer.getPosition();
         auto status = stepper->getStatus();
 
+        // Calculate theoretical max RPM for current sync frequency
+        float maxRPM = calculateMaxRPM(RuntimeConfig::Motion::sync_frequency);
+
         SerialDebug.print("Status - Encoder: ");
         SerialDebug.print(pos.count);
         SerialDebug.print(" Stepper: ");
         SerialDebug.print(status.currentPosition);
         SerialDebug.print(" Running: ");
         SerialDebug.print(status.running ? "Yes" : "No");
-        SerialDebug.print(" RPM: ");
+        SerialDebug.print(" Encoder RPM: ");
         SerialDebug.print(pos.rpm);
+        SerialDebug.print(" Max RPM at current sync: ");
+        SerialDebug.print(maxRPM, 1); // Print with 1 decimal place
         SerialDebug.print(" Sync Freq: ");
         SerialDebug.print(RuntimeConfig::Motion::sync_frequency);
         SerialDebug.println(" Hz");
