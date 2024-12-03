@@ -47,9 +47,9 @@ namespace SystemConfig
         // EXISTING: Motion control limits and defaults
         struct Motion
         {
-            static constexpr uint32_t MIN_SYNC_FREQ = 100;
-            static constexpr uint32_t MAX_SYNC_FREQ = 30000;
-            static constexpr uint32_t DEFAULT_SYNC_FREQ = 10000;
+            static constexpr uint32_t MIN_SYNC_FREQ = 1000;
+            static constexpr uint32_t MAX_SYNC_FREQ = 100000;
+            static constexpr uint32_t DEFAULT_SYNC_FREQ = 50000;
             static constexpr float DEFAULT_THREAD_PITCH = 1.0f;
             static constexpr float DEFAULT_LEADSCREW_PITCH = 2.0f;
         };
