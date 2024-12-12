@@ -265,12 +265,17 @@ int16_t EncoderTimer::calculateRPM()
     int32_t currentCount = getCount();
     int32_t deltaCounts = currentCount - lastCount;
 
+    // Store current values for next calculation
     lastCount = currentCount;
     lastTime = currentTime;
 
-    // Change this line to use SystemConfig instead of EncoderConfig
-    return ((int32_t)(deltaCounts * 15000)) /
-           (SystemConfig::RuntimeConfig::Encoder::ppr * deltaTime);
+    // Calculate RPM magnitude
+    int32_t rpmMagnitude = ((int32_t)(abs(deltaCounts) * 15000)) /
+                           (SystemConfig::RuntimeConfig::Encoder::ppr * deltaTime);
+
+    // Apply direction
+    bool isCountingDown = __HAL_TIM_IS_TIM_COUNTING_DOWN(&htim2);
+    return isCountingDown ? -rpmMagnitude : rpmMagnitude;
 }
 
 int16_t EncoderTimer::getRPM()
