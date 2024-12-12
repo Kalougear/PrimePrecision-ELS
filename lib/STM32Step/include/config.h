@@ -64,7 +64,7 @@ namespace STM32Step
      */
     struct TimingConfig
     {
-        static constexpr uint32_t STEPPER_CYCLE_US = 2; ///< Base cycle time (μs)
+        static constexpr uint32_t STEPPER_CYCLE_US = 3; ///< Base cycle time (μs)
         static constexpr uint32_t PULSE_WIDTH = 5;      ///< Step pulse width (μs)
         static constexpr uint32_t DIR_SETUP = 6;        ///< Direction setup time (μs)
         static constexpr uint32_t ENABLE_SETUP = 5;     ///< Enable setup time (μs)
