@@ -1,7 +1,9 @@
 #include "timer_base.h"
 #include "stepper.h"
 #include "Config/serial_debug.h"
-#include "Config/system_config.h"
+#include "Config/SystemConfig.h"
+#include "stm32h7xx_hal.h"
+#include "Hardware/SystemClock.h"
 
 namespace STM32Step
 {

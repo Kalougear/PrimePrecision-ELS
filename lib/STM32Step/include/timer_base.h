@@ -2,7 +2,7 @@
 
 #include "config.h"
 #include <HardwareTimer.h>
-#include "Core/system_clock.h"
+#include "Hardware/SystemClock.h"
 
 namespace STM32Step
 {

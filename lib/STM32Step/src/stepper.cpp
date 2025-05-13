@@ -1,6 +1,7 @@
 #include "stepper.h"
 #include "Config/serial_debug.h"
-#include "Config/system_config.h"
+#include "Config/SystemConfig.h"
+#include "stm32h7xx_hal.h"
 #include <algorithm>
 
 namespace STM32Step
@@ -123,7 +124,7 @@ namespace STM32Step
         if (_enabled)
             return;
 
-        HAL_GPIO_WritePin(PinConfig::EnablePin::PORT, GPIO_PIN_7,
+        HAL_GPIO_WritePin(GPIOE, 1 << _enablePin,
                           SystemConfig::RuntimeConfig::Stepper::invert_enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
         _enabled = true;
         _running = false;
@@ -136,7 +137,7 @@ namespace STM32Step
             return;
 
         stop();
-        HAL_GPIO_WritePin(PinConfig::EnablePin::PORT, GPIO_PIN_7, GPIO_PIN_SET);
+        HAL_GPIO_WritePin(GPIOE, 1 << _enablePin, GPIO_PIN_SET);
         _enabled = false;
     }
 
@@ -171,44 +172,41 @@ namespace STM32Step
         GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
         GPIO_InitStruct.Pull = GPIO_NOPULL;
         GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-        HAL_GPIO_Init(PinConfig::StepPin::PORT, &GPIO_InitStruct);
+        HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
         // Configure direction pin
         GPIO_InitStruct.Pin = 1 << (_dirPin & 0x0F);
-        HAL_GPIO_Init(PinConfig::DirPin::PORT, &GPIO_InitStruct);
+        HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
         // Configure enable pin
         GPIO_InitStruct.Pin = 1 << (_enablePin & 0x0F);
-        HAL_GPIO_Init(PinConfig::EnablePin::PORT, &GPIO_InitStruct);
+        HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
         // Set initial pin states
         GPIO_CLEAR_STEP();
-        HAL_GPIO_WritePin(PinConfig::DirPin::PORT,
-                          1 << (_dirPin & 0x0F),
-                          GPIO_PIN_RESET);
-        HAL_GPIO_WritePin(PinConfig::EnablePin::PORT,
-                          1 << (_enablePin & 0x0F),
+        HAL_GPIO_WritePin(GPIOE, 1 << (_dirPin & 0x0F), GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(GPIOE, 1 << (_enablePin & 0x0F),
                           SystemConfig::RuntimeConfig::Stepper::invert_enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
     }
 
     void Stepper::GPIO_SET_STEP()
     {
-        HAL_GPIO_WritePin(PinConfig::StepPin::PORT, 1 << (_stepPin & 0x0F), GPIO_PIN_SET);
+        HAL_GPIO_WritePin(GPIOE, 1 << (_stepPin & 0x0F), GPIO_PIN_SET);
     }
 
     void Stepper::GPIO_CLEAR_STEP()
     {
-        HAL_GPIO_WritePin(PinConfig::StepPin::PORT, 1 << (_stepPin & 0x0F), GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(GPIOE, 1 << (_stepPin & 0x0F), GPIO_PIN_RESET);
     }
 
     void Stepper::GPIO_SET_DIRECTION()
     {
-        HAL_GPIO_WritePin(PinConfig::DirPin::PORT, 1 << (_dirPin & 0x0F), GPIO_PIN_SET);
+        HAL_GPIO_WritePin(GPIOE, 1 << (_dirPin & 0x0F), GPIO_PIN_SET);
     }
 
     void Stepper::GPIO_CLEAR_DIRECTION()
     {
-        HAL_GPIO_WritePin(PinConfig::DirPin::PORT, 1 << (_dirPin & 0x0F), GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(GPIOE, 1 << (_dirPin & 0x0F), GPIO_PIN_RESET);
     }
 
     StepperStatus Stepper::getStatus() const
