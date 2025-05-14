@@ -1,9 +1,9 @@
 #include <Arduino.h>
 #include "STM32Step.h"
 #include "Config/serial_debug.h"
-#include "Core/system_clock.h"
-#include "Core/encoder_timer.h"
-#include "Config/system_config.h"
+#include "Hardware/SystemClock.h"
+#include "Hardware/EncoderTimer.h"
+#include "Config/SystemConfig.h"
 #include <HardwareTimer.h>
 
 HardwareSerial SerialDebug(PA3, PA2);

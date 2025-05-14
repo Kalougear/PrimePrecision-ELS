@@ -1,6 +1,6 @@
 #include <Arduino.h>
 #include "Config/serial_debug.h"
-#include "Core/system_clock.h" // Add this!
+#include "hardware/systemclock.h" // Add this!
 
 HardwareSerial SerialDebug(PA3, PA2);
 
