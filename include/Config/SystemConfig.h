@@ -23,6 +23,7 @@ namespace SystemConfig
             static constexpr uint8_t MIN_FILTER = 0;
             static constexpr uint8_t MAX_FILTER = 15;
             static constexpr uint8_t DEFAULT_FILTER = 8;
+            static constexpr uint32_t MIN_RPM_DELTA_TIME_MS = 10; // Minimum time delta (ms) for reliable RPM calculation
 
             // NEW: Added quadrature multiplier
             static constexpr uint16_t QUADRATURE_MULT = 4;

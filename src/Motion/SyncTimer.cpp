@@ -1,99 +1,162 @@
 #include "Motion/SyncTimer.h"
-#include "Config/serial_debug.h"
-#include "Hardware/EncoderTimer.h"
+#include "Config/serial_debug.h"   // For error printing if necessary
+#include "Hardware/EncoderTimer.h" // For EncoderTimer type
+#include <STM32Step.h>             // For Stepper type
 
-// Static instance initialization
+// Initialize static instance pointer for ISR callback
 SyncTimer *SyncTimer::instance = nullptr;
 
-// Initialize static sync request flag
-volatile bool SyncTimer::syncRequested = false;
-
+/**
+ * @brief Constructor for SyncTimer.
+ * Initializes member variables to their default states.
+ */
 SyncTimer::SyncTimer() : _timer(nullptr),
                          _enabled(false),
                          _error(false),
                          _lastUpdateTime(0),
                          _initialized(false),
-                         _timerFrequency(1000), // Default 1kHz update rate
+                         _timerFrequency(1000), // Default 1kHz, will be overridden by setConfig
                          _encoder(nullptr),
-                         _stepper(nullptr)
+                         _stepper(nullptr),
+                         _accumulatedFractionalSteps(0.0f),
+                         _isr_lastEncoderCount(0)
 {
 }
 
+/**
+ * @brief Destructor for SyncTimer.
+ * Calls end() to release timer resources and cleans up the timer object.
+ */
 SyncTimer::~SyncTimer()
 {
-    end();
+    end(); // Ensure timer is stopped and detached
     if (instance == this)
     {
-        instance = nullptr;
+        instance = nullptr; // Clear singleton if this was it
     }
     if (_timer)
     {
-        delete _timer;
+        delete _timer; // Free the HardwareTimer object
         _timer = nullptr;
     }
 }
 
-bool SyncTimer::begin()
+/**
+ * @brief Initializes the SyncTimer with dependent EncoderTimer and Stepper objects.
+ * Sets up the hardware timer (TIM6) for periodic interrupts.
+ * @param encoder Pointer to the EncoderTimer instance.
+ * @param stepper Pointer to the STM32Step::Stepper instance.
+ * @return True if initialization is successful, false otherwise.
+ */
+bool SyncTimer::begin(EncoderTimer *encoder, STM32Step::Stepper *stepper)
 {
     if (_initialized)
     {
-        return true;
+        return true; // Already initialized
     }
 
-    instance = this;
-    SerialDebug.println("Initializing Sync Timer...");
+    instance = this; // Set singleton for ISR callback
+
+    this->_encoder = encoder;
+    this->_stepper = stepper;
+
+    if (!this->_encoder || !this->_stepper)
+    {
+        // SerialDebug.println("ERROR: SyncTimer requires valid encoder and stepper instances."); // Optional error print
+        _error = true;
+        return false;
+    }
 
     if (!initTimer())
     {
-        SerialDebug.println("Sync Timer initialization failed");
+        // SerialDebug.println("ERROR: SyncTimer hardware timer initialization failed."); // Optional error print
+        _error = true; // initTimer should set _error if it fails internally
         return false;
     }
 
     _initialized = true;
-    SerialDebug.println("Sync Timer initialized successfully");
+    _error = false; // Clear error state on successful initialization
+    // SerialDebug.println("SyncTimer initialized successfully."); // Optional success print
     return true;
 }
 
+/**
+ * @brief Initializes the hardware timer (TIM6) used for synchronization.
+ * Configures the timer with an initial frequency and attaches the interrupt handler.
+ * @return True if timer initialization is successful, false otherwise.
+ */
 bool SyncTimer::initTimer()
 {
-    // Initialize timer on TIM6
-    _timer = new HardwareTimer(TIM6);
+    _timer = new HardwareTimer(TIM6); // Use TIM6 for SyncTimer
     if (!_timer)
     {
-        SerialDebug.println("Timer allocation failed");
+        // SerialDebug.println("ERROR: SyncTimer failed to allocate HardwareTimer for TIM6."); // Optional error print
+        _error = true;
         return false;
     }
 
-    // Calculate initial timer parameters
+    // Calculate initial timer parameters based on default _timerFrequency
     uint32_t prescaler, period;
     calculateTimerParameters(_timerFrequency, prescaler, period);
 
-    // Configure timer
     _timer->setPrescaleFactor(prescaler);
     _timer->setOverflow(period);
 
-    // Set callback - now just sets a flag
+    // Attach the ISR: lambda calls member function handleInterrupt
     _timer->attachInterrupt([this]()
                             { this->handleInterrupt(); });
 
+    // Timer is configured but not started yet (paused by default or explicit resume in enable())
     return true;
 }
 
+/**
+ * @brief Calculates the prescaler and auto-reload period for the timer to achieve a target frequency.
+ * @param freq The desired frequency in Hz.
+ * @param[out] prescaler The calculated prescaler value (to be set in PSC register - 1).
+ * @param[out] period The calculated auto-reload period value (ARR register).
+ * Assumes SystemCoreClock is the input clock to the timer (may need adjustment if APB prescalers differ for TIM6).
+ */
 void SyncTimer::calculateTimerParameters(uint32_t freq, uint32_t &prescaler, uint32_t &period)
 {
-    uint32_t timerClock = SystemCoreClock;
+    if (freq == 0)
+    { // Avoid division by zero
+        prescaler = 1;
+        period = 0xFFFF; // Max period, effectively very slow
+        return;
+    }
+    // For TIM6, the clock source is typically APB1 timer clock.
+    // If APB1 prescaler is > 1, timer clock is 2 * PCLK1. Otherwise, PCLK1.
+    // SystemCoreClock might be HCLK. Need to get specific timer clock.
+    // Assuming SystemCoreClock is a placeholder for the actual TIM6 input clock frequency.
+    // For STM32H7, TIM6 clock is from rcc_pclk1 if APB1 prescaler is 1, else 2*PCLK1.
+    // Let's assume PCLK1 is SystemCoreClock / APB1_Prescaler.
+    // For simplicity here, using SystemCoreClock directly; refine if specific clock source is known and different.
+    uint32_t timerClock = SystemCoreClock; // TODO: Confirm actual TIM6 clock source and frequency
     uint32_t targetTicks = timerClock / freq;
 
-    prescaler = 1;
+    prescaler = 1; // Actual register value will be prescaler - 1
     period = targetTicks;
 
+    // Adjust prescaler if period exceeds 16-bit timer limit (0xFFFF)
     while (period > 0xFFFF)
     {
         prescaler++;
+        if (prescaler == 0)
+        {                    // Overflowed prescaler, should not happen with practical frequencies
+            period = 0xFFFF; // Max out period
+            break;
+        }
         period = targetTicks / prescaler;
     }
+    // HardwareTimer library might handle prescaler as (value) or (value-1).
+    // Assuming it expects the factor directly (e.g., 1 for no division beyond clock source).
 }
 
+/**
+ * @brief Stops the synchronization timer and detaches its interrupt.
+ * Marks the SyncTimer as uninitialized.
+ */
 void SyncTimer::end()
 {
     if (!_initialized)
@@ -105,38 +168,74 @@ void SyncTimer::end()
     {
         _timer->pause();
         _timer->detachInterrupt();
+        // delete _timer; // Moved to destructor to prevent issues if end() is called multiple times
+        // _timer = nullptr;
     }
     _initialized = false;
+    _enabled = false; // Ensure it's marked as disabled
 }
 
+/**
+ * @brief Enables or disables the SyncTimer's operation.
+ * When enabled, it resets the internal state for ISR processing (_isr_lastEncoderCount,
+ * _accumulatedFractionalSteps) and resumes the hardware timer.
+ * When disabled, it pauses the hardware timer.
+ * @param enable True to enable synchronization, false to disable.
+ */
 void SyncTimer::enable(bool enable)
 {
     if (!_initialized || !_timer)
     {
+        _error = true; // Cannot enable/disable if not initialized
         return;
     }
 
     _enabled = enable;
     if (enable)
     {
-        _timer->resume();
+        if (_encoder)
+        {
+            _isr_lastEncoderCount = _encoder->getCount(); // Initialize last count from current encoder position
+        }
+        else
+        {
+            _isr_lastEncoderCount = 0; // Should not happen if begin() checked properly
+            _error = true;
+            return; // Critical dependency missing
+        }
+        _accumulatedFractionalSteps = 0.0f; // Reset accumulator for a clean start
+        _timer->resume();                   // Start or resume the hardware timer
     }
     else
     {
-        _timer->pause();
+        _timer->pause(); // Pause the hardware timer
     }
 }
 
+/**
+ * @brief Sets the synchronization configuration.
+ * Updates the internal configuration and adjusts the timer frequency accordingly.
+ * @param config A const reference to the SyncConfig struct containing new parameters.
+ */
 void SyncTimer::setConfig(const SyncConfig &config)
 {
     _config = config;
+    // Update timer frequency based on the new config's update_freq
     setSyncFrequency(config.update_freq);
 }
 
+/**
+ * @brief Sets or updates the frequency of the synchronization timer ISR.
+ * Recalculates and applies new prescaler and period values to the hardware timer.
+ * @param freq The desired ISR frequency in Hz.
+ */
 void SyncTimer::setSyncFrequency(uint32_t freq)
 {
     if (!_initialized || !_timer || freq == 0)
     {
+        // Cannot set frequency if not initialized, timer is null, or freq is zero
+        if (freq == 0 && _initialized && _timer)
+            _timer->pause(); // Pause if freq is zero
         return;
     }
 
@@ -146,51 +245,80 @@ void SyncTimer::setSyncFrequency(uint32_t freq)
     _timer->setPrescaleFactor(prescaler);
     _timer->setOverflow(period);
 
-    _timerFrequency = freq;
+    _timerFrequency = freq; // Store the new frequency
+
+    // If timer was already enabled, it continues with new frequency.
+    // If it was paused, it remains paused but configured.
 }
 
-// Minimal interrupt handler - just sets a flag
+/**
+ * @brief Hardware timer interrupt handler for TIM6.
+ * This is the core synchronization logic, executed at `_timerFrequency`.
+ * It reads the encoder delta, calculates required stepper steps (with fractional accumulation),
+ * and commands the stepper motor. This method must be efficient as it runs in ISR context.
+ */
 void SyncTimer::handleInterrupt()
 {
-    syncRequested = true;
-}
-
-// Process sync outside interrupt context
-void SyncTimer::processSyncRequest()
-{
-    if (!syncRequested || !_enabled || !_encoder || !_stepper)
+    // Optional: Infrequent debug print for ISR firing confirmation
+    /*
+    static uint32_t isr_call_count = 0;
+    if (++isr_call_count % _timerFrequency == 0) // Approx once per second
     {
+        SerialDebug.println("SyncTimer ISR firing");
+    }
+    */
+
+    if (!_enabled || !_encoder || !_stepper)
+    {
+        // Critical dependencies missing or not enabled, cannot proceed.
         return;
     }
 
-    static int32_t lastEncoderCount = 0;
-
-    // Get encoder count with interrupts disabled
-    __disable_irq();
+    // Read current encoder count. EncoderTimer::getCount() is assumed ISR-safe
+    // as it directly reads the hardware counter register.
     int32_t currentCount = _encoder->getCount();
-    __enable_irq();
-
-    int32_t encoderDelta = currentCount - lastEncoderCount;
+    int32_t encoderDelta = currentCount - _isr_lastEncoderCount;
 
     if (encoderDelta != 0)
     {
-        int32_t requiredSteps = calculateRequiredSteps(encoderDelta);
-        _stepper->setRelativePosition(requiredSteps);
-        lastEncoderCount = currentCount;
+        // Calculate required steps based on sync ratio (thread_pitch / leadscrew_pitch)
+        float sync_ratio = calculateSyncRatio();
+        float floatStepsToCommand = encoderDelta * sync_ratio;
+
+        if (_config.reverse_direction)
+        {
+            floatStepsToCommand = -floatStepsToCommand;
+        }
+
+        // Accumulate fractional steps
+        _accumulatedFractionalSteps += floatStepsToCommand;
+
+        // Determine whole integer steps to command
+        int32_t integerStepsToCommand = static_cast<int32_t>(_accumulatedFractionalSteps);
+
+        if (integerStepsToCommand != 0)
+        {
+            // Command the stepper. Stepper::setRelativePosition and its chain must be ISR-safe.
+            // This involves HAL calls which are generally ISR-safe if brief.
+            _stepper->setRelativePosition(integerStepsToCommand);
+
+            // Subtract the commanded whole steps from the accumulator
+            _accumulatedFractionalSteps -= static_cast<float>(integerStepsToCommand);
+        }
+        _isr_lastEncoderCount = currentCount; // Update last count for next ISR cycle
     }
 
-    _lastUpdateTime = HAL_GetTick();
-    syncRequested = false;
+    _lastUpdateTime = HAL_GetTick(); // Record time of this ISR execution
 }
 
+/**
+ * @brief Calculates the synchronization ratio based on configured pitches.
+ * This ratio determines the electronic gearing between encoder counts and stepper steps.
+ * @return The calculated sync ratio. Returns 0 if `leadscrew_pitch` is zero to prevent division by zero.
+ */
 float SyncTimer::calculateSyncRatio() const
 {
+    if (_config.leadscrew_pitch == 0.0f) // Check for zero to prevent division by zero
+        return 0.0f;
     return _config.thread_pitch / _config.leadscrew_pitch;
-}
-
-int32_t SyncTimer::calculateRequiredSteps(int32_t encoderDelta)
-{
-    float sync_ratio = calculateSyncRatio();
-    float steps = encoderDelta * sync_ratio;
-    return _config.reverse_direction ? -static_cast<int32_t>(steps) : static_cast<int32_t>(steps);
 }

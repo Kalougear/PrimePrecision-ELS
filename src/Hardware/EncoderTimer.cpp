@@ -1,239 +1,221 @@
-// EncoderTimer implementation
 #include "Hardware/EncoderTimer.h"
-#include "Config/serial_debug.h"
-#include "Config/SystemConfig.h" // System configuration
+#include "Config/serial_debug.h" // For error printing
+#include "Config/SystemConfig.h" // For SystemConfig::RuntimeConfig::Encoder values
 
+// Initialize static instance pointer for ISR callback
 EncoderTimer *EncoderTimer::instance = nullptr;
 
-EncoderTimer::EncoderTimer() : _currentCount(0),
+/**
+ * @brief Constructor for EncoderTimer.
+ * Initializes member variables to default states.
+ */
+EncoderTimer::EncoderTimer() : _currentCount(0), // Not strictly used for software extension currently
                                _lastUpdateTime(0),
                                _error(false),
-                               _initialized(false),
-                               _syncEnabled(false)
+                               _initialized(false)
 {
+    // Ensure htim2 structure is zeroed out before use by HAL
     memset(static_cast<void *>(&htim2), 0, sizeof(htim2));
-    memset(static_cast<void *>(&_syncConfig), 0, sizeof(_syncConfig));
 }
 
+/**
+ * @brief Destructor for EncoderTimer.
+ * Calls end() to ensure resources are released.
+ */
 EncoderTimer::~EncoderTimer()
 {
     end();
-    if (instance == this)
+    if (instance == this) // Clear singleton instance if this was it
     {
         instance = nullptr;
     }
 }
 
+/**
+ * @brief Initializes the GPIO pins and TIM2 for encoder mode.
+ * Sets up the hardware timer (TIM2) as a quadrature encoder counter.
+ * Enables interrupts for timer updates (overflows/underflows).
+ * @return True if initialization was successful, false otherwise.
+ */
 bool EncoderTimer::begin()
 {
     if (_initialized)
-        return true;
+        return true; // Already initialized
 
-    SerialDebug.println("Starting encoder timer initialization...");
-    instance = this;
+    instance = this; // Set singleton instance for ISR callback
 
-    // Initialize components one by one with error checking
-    SerialDebug.println("Initializing GPIO...");
     if (!initGPIO())
     {
-        SerialDebug.println("GPIO initialization failed");
+        _error = true;
+        // SerialDebug.println("CRITICAL: EncoderTimer GPIO initialization failed!"); // Optional critical error print
         return false;
     }
-    SerialDebug.println("GPIO initialized");
 
-    SerialDebug.println("Initializing Timer...");
     if (!initTimer())
     {
-        SerialDebug.println("Timer initialization failed");
+        _error = true;
+        // SerialDebug.println("CRITICAL: EncoderTimer TIM2 initialization failed!"); // Optional critical error print
         return false;
     }
-    SerialDebug.println("Timer initialized");
 
-    // Enable timer update interrupt for overflow detection
-    SerialDebug.println("Enabling timer interrupts...");
+    // Enable timer update interrupt (for overflow/underflow, though not strictly used for count extension yet)
     if (HAL_TIM_Base_Start_IT(&htim2) != HAL_OK)
     {
-        SerialDebug.println("Failed to start timer interrupts");
+        _error = true;
+        // SerialDebug.println("CRITICAL: EncoderTimer failed to start TIM2 interrupts!");
         return false;
     }
-    SerialDebug.println("Timer base started with interrupts");
-
-    __HAL_TIM_ENABLE_IT(&htim2, TIM_IT_UPDATE);
-    SerialDebug.println("Timer update interrupt enabled");
+    // __HAL_TIM_ENABLE_IT(&htim2, TIM_IT_UPDATE); // Redundant if HAL_TIM_Base_Start_IT enables it. Check HAL docs.
+    // Typically HAL_TIM_Base_Start_IT is sufficient.
 
     _initialized = true;
-    SerialDebug.println("Encoder timer initialization complete");
+    _error = false; // Clear error flag on successful initialization
+    // SerialDebug.println("EncoderTimer initialized successfully."); // Optional success print
     return true;
 }
 
+/**
+ * @brief Initializes GPIO pins (PA0, PA1) for TIM2 encoder input channels (CH1, CH2).
+ * Configures pins for Alternate Function Push-Pull with pull-up resistors.
+ * @return True if GPIO initialization was successful, false otherwise.
+ */
 bool EncoderTimer::initGPIO()
 {
-    SerialDebug.println("Enabling GPIO clock...");
-    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOA_CLK_ENABLE(); // Ensure GPIOA clock is enabled
 
     GPIO_InitTypeDef gpio_config = {0};
-    gpio_config.Pin = GPIO_PIN_0 | GPIO_PIN_1;
+    gpio_config.Pin = GPIO_PIN_0 | GPIO_PIN_1; // TIM2_CH1 (PA0), TIM2_CH2 (PA1)
     gpio_config.Mode = GPIO_MODE_AF_PP;
-    gpio_config.Pull = GPIO_PULLUP;
+    gpio_config.Pull = GPIO_PULLUP; // Pull-ups are common for encoder inputs
     gpio_config.Speed = GPIO_SPEED_FREQ_HIGH;
-    gpio_config.Alternate = GPIO_AF1_TIM2;
+    gpio_config.Alternate = GPIO_AF1_TIM2; // Alternate function for TIM2
 
-    SerialDebug.println("Configuring GPIO pins...");
     HAL_GPIO_Init(GPIOA, &gpio_config);
-    SerialDebug.println("GPIO pins configured");
-    return true;
+    return true; // Assume HAL_GPIO_Init doesn't return status, or check specific HAL version
 }
 
+/**
+ * @brief Initializes TIM2 in encoder interface mode.
+ * Configures TIM2 to count on TI1 and TI2 edges (quadrature mode).
+ * Sets the counter period to maximum (32-bit) and enables the encoder.
+ * @return True if timer initialization and start was successful, false otherwise.
+ */
 bool EncoderTimer::initTimer()
 {
-    SerialDebug.println("Enabling Timer2 clock...");
-    __HAL_RCC_TIM2_CLK_ENABLE();
+    __HAL_RCC_TIM2_CLK_ENABLE(); // Ensure TIM2 clock is enabled
 
     htim2.Instance = TIM2;
-    htim2.Init.Prescaler = 0;
-    htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-    htim2.Init.Period = 0xFFFFFFFF;
+    htim2.Init.Prescaler = 0;                    // No prescaling, count every valid edge
+    htim2.Init.CounterMode = TIM_COUNTERMODE_UP; // Counter mode (UP or UP/DOWN, encoder mode overrides this)
+    htim2.Init.Period = 0xFFFFFFFF;              // Full 32-bit range for encoder count
     htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-    htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+    htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE; // Not critical for encoder mode
 
     TIM_Encoder_InitTypeDef encoder_config = {0};
-    encoder_config.EncoderMode = TIM_ENCODERMODE_TI12;
-    encoder_config.IC1Polarity = TIM_ICPOLARITY_RISING;
-    encoder_config.IC1Selection = TIM_ICSELECTION_DIRECTTI;
-    encoder_config.IC1Prescaler = TIM_ICPSC_DIV1;
-    encoder_config.IC1Filter = 0xF;
-    encoder_config.IC2Polarity = TIM_ICPOLARITY_RISING;
-    encoder_config.IC2Selection = TIM_ICSELECTION_DIRECTTI;
-    encoder_config.IC2Prescaler = TIM_ICPSC_DIV1;
-    encoder_config.IC2Filter = 0xF;
+    encoder_config.EncoderMode = TIM_ENCODERMODE_TI12;                             // Count on both TI1 and TI2 edges (x4 quadrature)
+    encoder_config.IC1Polarity = TIM_ICPOLARITY_RISING;                            // Polarity for TI1
+    encoder_config.IC1Selection = TIM_ICSELECTION_DIRECTTI;                        // TI1 connected to CH1 input
+    encoder_config.IC1Prescaler = TIM_ICPSC_DIV1;                                  // No prescaler for input
+    encoder_config.IC1Filter = SystemConfig::RuntimeConfig::Encoder::filter_level; // Input filter (0x0 to 0xF)
+    encoder_config.IC2Polarity = TIM_ICPOLARITY_RISING;                            // Polarity for TI2
+    encoder_config.IC2Selection = TIM_ICSELECTION_DIRECTTI;                        // TI2 connected to CH2 input
+    encoder_config.IC2Prescaler = TIM_ICPSC_DIV1;                                  // No prescaler for input
+    encoder_config.IC2Filter = SystemConfig::RuntimeConfig::Encoder::filter_level; // Input filter
 
-    SerialDebug.println("Initializing encoder timer...");
     if (HAL_TIM_Encoder_Init(&htim2, &encoder_config) != HAL_OK)
     {
-        SerialDebug.println("Timer initialization failed");
-        return false;
+        return false; // HAL encoder initialization failed
     }
 
-    SerialDebug.println("Starting encoder timer...");
     if (HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL) != HAL_OK)
     {
-        SerialDebug.println("Timer start failed");
-        return false;
+        return false; // Failed to start encoder channels
     }
-
-    SerialDebug.println("Timer configuration complete");
     return true;
 }
 
+/**
+ * @brief De-initializes the timer and GPIOs used by the encoder.
+ * Stops the timer and disables its interrupt.
+ */
 void EncoderTimer::end()
 {
     if (!_initialized)
         return;
 
-    HAL_NVIC_DisableIRQ(TIM2_IRQn);
-    HAL_TIM_Encoder_Stop(&htim2, TIM_CHANNEL_ALL);
-    HAL_TIM_Base_DeInit(&htim2);
+    HAL_NVIC_DisableIRQ(TIM2_IRQn);                // Disable TIM2 interrupt in NVIC
+    HAL_TIM_Encoder_Stop(&htim2, TIM_CHANNEL_ALL); // Stop encoder channels
+    HAL_TIM_Base_DeInit(&htim2);                   // De-initialize TIM2 base
+    // GPIO de-initialization could be added here if necessary
     _initialized = false;
 }
 
+/**
+ * @brief Resets the software encoder count and error status.
+ * Also resets the hardware timer's counter register to 0.
+ * Interrupts are temporarily disabled during reset for atomicity.
+ */
 void EncoderTimer::reset()
 {
     if (!_initialized)
         return;
 
     __disable_irq();
-    _currentCount = 0;
+    _currentCount = 0; // Reset software state (though not primarily used for count)
     _error = false;
-    __HAL_TIM_SET_COUNTER(&htim2, 0);
+    __HAL_TIM_SET_COUNTER(&htim2, 0); // Reset hardware counter
+    _lastUpdateTime = HAL_GetTick();  // Reset time for RPM calculation
+    // Also reset static variables in calculateRPM if it's to be fully reset
+    // This requires a non-const method or a different approach for calculateRPM's statics.
+    // For now, calculateRPM will continue from its last state unless its statics are also reset.
     __enable_irq();
 }
 
-int32_t EncoderTimer::getCount()
+/**
+ * @brief Gets the current raw encoder count from the hardware timer.
+ * @return The 32-bit value of TIM2's counter register.
+ */
+int32_t EncoderTimer::getCount() const
 {
     if (!_initialized)
         return 0;
-
-    __disable_irq();
-    int32_t count = (int32_t)__HAL_TIM_GET_COUNTER(&htim2);
-    __enable_irq();
-    return count;
+    return (int32_t)__HAL_TIM_GET_COUNTER(&htim2);
 }
 
-void EncoderTimer::setSyncConfig(const SyncConfig &config)
+/**
+ * @brief Static ISR callback function, registered with the timer interrupt vector.
+ * Calls the handleOverflow method of the singleton EncoderTimer instance.
+ */
+void EncoderTimer::updateCallback() // Static
 {
-    __disable_irq();
-    _syncConfig = config;
-    _lastSyncCount = _currentCount;
-    __enable_irq();
-}
-
-EncoderTimer::SyncPosition EncoderTimer::getSyncPosition()
-{
-    SyncPosition pos;
-    pos.valid = false;
-
-    if (!_initialized || !_syncEnabled)
-        return pos;
-
-    __disable_irq();
-    pos.encoder_count = getCount();
-    pos.required_steps = calculateRequiredSteps(pos.encoder_count);
-    pos.timestamp = HAL_GetTick();
-    pos.valid = !_error;
-    __enable_irq();
-
-    return pos;
-}
-
-float EncoderTimer::calculateStepperFrequency(int16_t rpm)
-{
-    if (rpm == 0)
-        return 0;
-
-    float steps_per_rev = _syncConfig.stepper_steps * _syncConfig.microsteps;
-    float sync_ratio = calculateSyncRatio();
-    float rps = rpm / 60.0f;
-
-    return rps * steps_per_rev * sync_ratio;
-}
-
-int32_t EncoderTimer::calculateRequiredSteps(int32_t encoderCount)
-{
-    int32_t counts_per_rev = SystemConfig::RuntimeConfig::Encoder::ppr * 4;
-    float sync_ratio = calculateSyncRatio();
-
-    float steps_per_count = (_syncConfig.stepper_steps * _syncConfig.microsteps * sync_ratio) /
-                            counts_per_rev;
-
-    int32_t delta_counts = encoderCount - _lastSyncCount;
-    float required_steps = delta_counts * steps_per_count;
-
-    return _syncConfig.reverse_sync ? -(int32_t)required_steps : (int32_t)required_steps;
-}
-
-float EncoderTimer::calculateSyncRatio() const
-{
-    return _syncConfig.thread_pitch / _syncConfig.leadscrew_pitch;
-}
-
-void EncoderTimer::updateCallback()
-{
-    if (instance)
+    if (instance) // Check if instance is valid
     {
         instance->handleOverflow();
     }
 }
 
+/**
+ * @brief Handles the timer update interrupt (typically overflow/underflow).
+ * This method is called from the ISR context via updateCallback.
+ * It updates the _lastUpdateTime timestamp.
+ * Note: With a 32-bit hardware counter, overflows are rare unless the spindle runs
+ * at extremely high speeds for very long periods without the count being read or reset.
+ * This ISR is primarily for future extension or specific overflow handling if needed.
+ */
 void EncoderTimer::handleOverflow()
 {
     if (!_initialized)
         return;
-
-    _currentCount = getCount();
     _lastUpdateTime = HAL_GetTick();
+    // Add any specific logic for handling a 32-bit counter overflow if necessary.
+    // For typical ELS usage, the 32-bit count range is usually sufficient.
 }
 
-EncoderTimer::Position EncoderTimer::getPosition()
+/**
+ * @brief Gets the complete current position and speed data from the encoder.
+ * @return EncoderTimer::Position struct populated with current count, timestamp, RPM, direction, and validity.
+ */
+EncoderTimer::Position EncoderTimer::getPosition() const
 {
     Position pos;
     pos.valid = false;
@@ -241,44 +223,102 @@ EncoderTimer::Position EncoderTimer::getPosition()
     if (!_initialized)
         return pos;
 
-    __disable_irq();
-    pos.count = getCount();
-    pos.timestamp = HAL_GetTick();
-    pos.direction = __HAL_TIM_IS_TIM_COUNTING_DOWN(&htim2);
+    pos.count = getCount();                                 // Hardware count
+    pos.timestamp = HAL_GetTick();                          // Current timestamp
+    pos.direction = __HAL_TIM_IS_TIM_COUNTING_DOWN(&htim2); // True if counting down
     pos.rpm = calculateRPM();
     pos.valid = !_error;
-    __enable_irq();
 
     return pos;
 }
 
-int16_t EncoderTimer::calculateRPM()
+/**
+ * @brief Calculates the current Revolutions Per Minute (RPM) of the spindle.
+ * This method uses static local variables to store the previous count and time,
+ * allowing calculation of RPM based on the change in count over the change in time.
+ * It respects the `SystemConfig::RuntimeConfig::Encoder::invert_direction` flag.
+ * @return Calculated RPM as a signed 16-bit integer. Returns 0 if deltaTime is too small.
+ */
+int16_t EncoderTimer::calculateRPM() const
 {
-    static uint32_t lastCount = 0;
-    static uint32_t lastTime = 0;
-    uint32_t currentTime = HAL_GetTick();
-    uint32_t deltaTime = currentTime - lastTime;
+    static uint32_t lastStaticCount = 0; // Renamed to avoid confusion with member _currentCount
+    static uint32_t lastStaticTime = 0;  // Using 'static' here means these persist across calls
 
-    if (deltaTime < 10)
+    uint32_t currentTime = HAL_GetTick();
+    uint32_t deltaTime = currentTime - lastStaticTime;
+
+    // Prevent division by zero or noisy RPM from very small deltaTime
+    if (deltaTime < SystemConfig::Limits::Encoder::MIN_RPM_DELTA_TIME_MS) // e.g., 10ms
         return 0;
 
-    int32_t currentCount = getCount();
-    int32_t deltaCounts = currentCount - lastCount;
+    int32_t currentHardwareCount = (int32_t)__HAL_TIM_GET_COUNTER(&htim2);
+    int32_t deltaCounts = currentHardwareCount - lastStaticCount;
 
-    // Store current values for next calculation
-    lastCount = currentCount;
-    lastTime = currentTime;
+    // Update static variables for the next call
+    lastStaticCount = currentHardwareCount;
+    lastStaticTime = currentTime;
+
+    if (deltaCounts == 0) // No change in count, so RPM is 0
+        return 0;
 
     // Calculate RPM magnitude
-    int32_t rpmMagnitude = ((int32_t)(abs(deltaCounts) * 15000)) /
-                           (SystemConfig::RuntimeConfig::Encoder::ppr * deltaTime);
+    // RPM = (deltaCounts / (PPR * QuadratureFactor)) / (deltaTime_seconds) * 60
+    // Note: TIM_ENCODERMODE_TI12 already provides x4 quadrature count.
+    // So, SystemConfig::RuntimeConfig::Encoder::ppr should be the true PPR of the encoder disk.
+    // The hardware counter gives (PPR * 4) counts per revolution.
+    // RPM = (deltaCounts_quad / (PPR_true * 4)) / (deltaTime_ms / 1000.0) * 60.0
+    // RPM = (deltaCounts_quad * 60000.0) / (PPR_true * 4 * deltaTime_ms)
+    // RPM = (deltaCounts_quad * 15000.0) / (PPR_true * deltaTime_ms)
+    // This matches the original scaling if SystemConfig::RuntimeConfig::Encoder::ppr is true PPR.
 
-    // Apply direction
+    // Ensure PPR is not zero to avoid division by zero
+    uint32_t ppr_val = SystemConfig::RuntimeConfig::Encoder::ppr;
+    if (ppr_val == 0)
+        return 0; // Or handle as an error
+
+    // Use floating point for precision in intermediate calculation
+    double rpm_double = (static_cast<double>(deltaCounts) * 15000.0) / (static_cast<double>(ppr_val) * static_cast<double>(deltaTime));
+    int16_t rpmMagnitude = static_cast<int16_t>(round(rpm_double)); // Round to nearest integer
+
+    // Apply direction based on timer counting direction
     bool isCountingDown = __HAL_TIM_IS_TIM_COUNTING_DOWN(&htim2);
-    return isCountingDown ? -rpmMagnitude : rpmMagnitude;
+    int16_t finalRpm = isCountingDown ? -rpmMagnitude : rpmMagnitude;
+
+    // Apply software inversion if configured
+    if (SystemConfig::RuntimeConfig::Encoder::invert_direction)
+    {
+        finalRpm = -finalRpm;
+    }
+    return finalRpm;
 }
 
-int16_t EncoderTimer::getRPM()
+/**
+ * @brief Convenience method to get the calculated RPM.
+ * @return Current RPM.
+ */
+int16_t EncoderTimer::getRPM() const
 {
     return calculateRPM();
+}
+
+// Implementation for new accessor methods from header
+uint32_t EncoderTimer::getRawCounter() const
+{
+    if (!_initialized)
+        return 0;
+    return __HAL_TIM_GET_COUNTER(&htim2);
+}
+
+uint32_t EncoderTimer::getTimerStatus() const
+{
+    if (!_initialized)
+        return 0;
+    return __HAL_TIM_GET_FLAG(&htim2, TIM_FLAG_UPDATE);
+}
+
+uint32_t EncoderTimer::getTimerCR1() const
+{
+    if (!_initialized)
+        return 0;
+    return htim2.Instance->CR1;
 }

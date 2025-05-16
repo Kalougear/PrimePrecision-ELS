@@ -3,7 +3,7 @@
 
 // Version 1.1
 
-#define MAX_STRING_SIZE 11
+#define MAX_STRING_SIZE 40
 #define QUANTITY_OF_PACKETS 10
 
 #define TICK_TIME_OUT 0xFFFFFF
