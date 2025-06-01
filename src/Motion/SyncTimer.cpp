@@ -2,6 +2,7 @@
 #include "Config/serial_debug.h"   // For error printing if necessary
 #include "Hardware/EncoderTimer.h" // For EncoderTimer type
 #include <STM32Step.h>             // For Stepper type
+#include <cmath>                   // For std::round
 
 // Initialize static instance pointer for ISR callback
 SyncTimer *SyncTimer::instance = nullptr;
@@ -217,11 +218,57 @@ void SyncTimer::enable(bool enable)
  * Updates the internal configuration and adjusts the timer frequency accordingly.
  * @param config A const reference to the SyncConfig struct containing new parameters.
  */
-void SyncTimer::setConfig(const SyncConfig &config)
+void SyncTimer::setConfig(const SyncConfig &new_config)
 {
-    _config = config;
-    // Update timer frequency based on the new config's update_freq
-    setSyncFrequency(config.update_freq);
+    if (!_initialized)
+    {
+        // If not initialized, just store the config. It will be fully applied in begin() or later.
+        // However, setSyncFrequency might still be problematic if _timer is null.
+        // For safety, perhaps only allow setConfig after begin().
+        // For now, assume _config can be updated, but frequency setting might fail if _timer is null.
+        _config = new_config;
+        if (_timer)
+        { // Only try to set frequency if timer object exists
+            setSyncFrequency(_config.update_freq);
+        }
+        SerialDebug.println("SyncTimer::setConfig - Called before fully initialized. Stored config.");
+        return;
+    }
+
+    double old_steps_per_tick_log = _config.steps_per_encoder_tick;
+    bool config_had_significant_change = std::abs(old_steps_per_tick_log - new_config.steps_per_encoder_tick) > 1e-9;
+
+    SerialDebug.print("SyncTimer::setConfig - Old _config.steps_per_tick: ");
+    SerialDebug.println(old_steps_per_tick_log, 6);
+    SerialDebug.print("SyncTimer::setConfig - New new_config.steps_per_tick: ");
+    SerialDebug.println(new_config.steps_per_encoder_tick, 6);
+    SerialDebug.print("SyncTimer::setConfig - Config had significant change: ");
+    SerialDebug.println(config_had_significant_change);
+
+    bool was_enabled = _enabled;
+
+    if (was_enabled)
+    {
+        this->enable(false); // Pause timer, set _enabled = false. ISR will not run.
+    }
+
+    _config = new_config;                  // Apply the new configuration values
+    setSyncFrequency(_config.update_freq); // Update hardware timer's period/prescaler. This is safe as timer is paused.
+
+    // If the timer was originally enabled, re-enable it.
+    // enable(true) will reset _accumulatedFractionalSteps and _isr_lastEncoderCount.
+    if (was_enabled)
+    {
+        SerialDebug.println("SyncTimer::setConfig - Re-enabling timer after config change.");
+        this->enable(true);
+    }
+    else if (config_had_significant_change && _initialized)
+    {
+        // If config changed significantly but timer was not enabled,
+        // still good to reset accumulator. _isr_lastEncoderCount will be set by enable(true) later.
+        SerialDebug.println("SyncTimer::setConfig - Config changed (timer was not enabled), pre-resetting accumulator.");
+        _accumulatedFractionalSteps = 0.0f;
+    }
 }
 
 /**
@@ -281,20 +328,19 @@ void SyncTimer::handleInterrupt()
 
     if (encoderDelta != 0)
     {
-        // Calculate required steps based on sync ratio (thread_pitch / leadscrew_pitch)
-        float sync_ratio = calculateSyncRatio();
-        float floatStepsToCommand = encoderDelta * sync_ratio;
+        // Use the pre-calculated steps_per_encoder_tick factor (now double precision)
+        // This factor now carries the sign based on thread_pitch.
+        double floatStepsToCommand = static_cast<double>(encoderDelta) * _config.steps_per_encoder_tick;
 
-        if (_config.reverse_direction)
-        {
-            floatStepsToCommand = -floatStepsToCommand;
-        }
+        // The _config.reverse_direction logic is removed from here,
+        // as MotionControl now sets it to false, and Stepper::ISR handles physical inversion.
 
-        // Accumulate fractional steps
+        // Accumulate fractional steps (now double precision)
         _accumulatedFractionalSteps += floatStepsToCommand;
 
         // Determine whole integer steps to command
-        int32_t integerStepsToCommand = static_cast<int32_t>(_accumulatedFractionalSteps);
+        // Use std::round for proper rounding to nearest integer
+        int32_t integerStepsToCommand = static_cast<int32_t>(std::round(_accumulatedFractionalSteps));
 
         if (integerStepsToCommand != 0)
         {
@@ -302,8 +348,8 @@ void SyncTimer::handleInterrupt()
             // This involves HAL calls which are generally ISR-safe if brief.
             _stepper->setRelativePosition(integerStepsToCommand);
 
-            // Subtract the commanded whole steps from the accumulator
-            _accumulatedFractionalSteps -= static_cast<float>(integerStepsToCommand);
+            // Subtract the commanded whole steps from the accumulator (now double precision)
+            _accumulatedFractionalSteps -= static_cast<double>(integerStepsToCommand);
         }
         _isr_lastEncoderCount = currentCount; // Update last count for next ISR cycle
     }
@@ -316,9 +362,17 @@ void SyncTimer::handleInterrupt()
  * This ratio determines the electronic gearing between encoder counts and stepper steps.
  * @return The calculated sync ratio. Returns 0 if `leadscrew_pitch` is zero to prevent division by zero.
  */
-float SyncTimer::calculateSyncRatio() const
+double SyncTimer::calculateSyncRatio() const // Changed return type to double
 {
-    if (_config.leadscrew_pitch == 0.0f) // Check for zero to prevent division by zero
-        return 0.0f;
-    return _config.thread_pitch / _config.leadscrew_pitch;
+    // This function is now effectively replaced by using _config.steps_per_encoder_tick directly.
+    // It can be removed or modified to return _config.steps_per_encoder_tick if still called from somewhere,
+    // though direct usage in handleInterrupt is cleaner.
+    // For now, let's make it return the new factor if it were to be used.
+    // However, it's better to remove calls to this and use the factor directly.
+    // SerialDebug.println("Warning: calculateSyncRatio() called, should use _config.steps_per_encoder_tick directly.");
+    return _config.steps_per_encoder_tick;
+    // Original logic:
+    // if (_config.leadscrew_pitch == 0.0f) // Check for zero to prevent division by zero
+    //     return 0.0f;
+    // return _config.thread_pitch / _config.leadscrew_pitch;
 }

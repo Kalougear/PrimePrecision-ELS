@@ -75,6 +75,26 @@ namespace STM32Step
         /** @brief Gets detailed status of the stepper motor. @return StepperStatus struct. */
         StepperStatus getStatus() const;
 
+        // --- Speed and Acceleration Control (New for Continuous Mode) ---
+        /**
+         * @brief Sets the target speed for continuous run mode.
+         * @param frequency_hz Target speed in steps per second (Hz).
+         */
+        void setSpeedHz(float frequency_hz);
+
+        /**
+         * @brief Sets the acceleration for continuous run mode.
+         * @param accel_steps_per_s2 Acceleration in steps per second squared.
+         */
+        void setAcceleration(float accel_steps_per_s2);
+
+        /**
+         * @brief Starts continuous motion at the configured speed and acceleration.
+         * @param direction True for one direction (e.g., forward/positive), false for the other.
+         *                  Actual physical direction depends on wiring and DIR pin logic.
+         */
+        void runContinuous(bool direction);
+
         // --- Position Control ---
         /**
          * @brief Sets the absolute target position for the motor.
@@ -138,11 +158,23 @@ namespace STM32Step
         // State variables
         volatile bool _enabled;            ///< True if driver is enabled.
         volatile bool _running;            ///< True if motor is actively moving to a target.
-        volatile bool _currentDirection;   ///< Current direction state (e.g. false=CW, true=CCW).
-        volatile int32_t _currentPosition; ///< Current software position in steps.
-        volatile int32_t _targetPosition;  ///< Target software position in steps.
+        volatile bool _currentDirection;   ///< Current direction state (e.g. false=CW, true=CCW). Used by both modes.
+        volatile int32_t _currentPosition; ///< Current software position in steps (primarily for ELS mode).
+        volatile int32_t _targetPosition;  ///< Target software position in steps (primarily for ELS mode).
         OperationMode _operationMode;      ///< Current operational mode.
-        uint8_t state;                     ///< State for the ISR's internal step generation state machine.
+        uint8_t state;                     ///< State for the ISR's internal step generation state machine (for ELS position mode).
+
+        // New members for continuous speed mode with acceleration
+        volatile bool _isContinuousMode;       ///< True if operating in continuous speed mode.
+        volatile float _targetSpeedHz;         ///< Target speed in Hz for continuous mode.
+        volatile float _currentSpeedHz;        ///< Current instantaneous speed in Hz during acceleration/deceleration.
+        float _accelerationStepsPerS2;         ///< Acceleration rate in steps/s^2.
+        volatile uint32_t _nextStepTimeMicros; ///< Timestamp for the next step in continuous mode ISR.
+                                               ///< Stores the micros() value when the next step should occur.
+        volatile float _isrAccumulatedSteps;   ///< For accumulating fractional steps at lower speeds/frequencies in ISR.
+                                               ///< Or, could be used to track progress during acceleration.
+                                               ///< Alternative: _timePerStepMicros = 1.0f / _currentSpeedHz * 1e6;
+        volatile uint32_t _lastStepTimeMicros; ///< Timestamp of the last step taken, for acceleration calculations.
     };
 
 } // namespace STM32Step

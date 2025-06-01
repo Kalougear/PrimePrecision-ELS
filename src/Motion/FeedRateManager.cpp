@@ -131,10 +131,10 @@ void FeedRateManager::handlePrevNextValue(int32_t value)
 
 void FeedRateManager::setMetric(bool metric_param) // Renamed to avoid confusion with member
 {
-    SerialDebug.print("FeedRateManager::setMetric called with: ");
-    SerialDebug.println(metric_param ? "true (metric)" : "false (imperial)");
-    SerialDebug.print("  Current this->isMetric before change: ");
-    SerialDebug.println(this->isMetric ? "true (metric)" : "false (imperial)");
+    // SerialDebug.print("FeedRateManager::setMetric called with: "); // Removed
+    // SerialDebug.println(metric_param ? "true (metric)" : "false (imperial)"); // Removed
+    // SerialDebug.print("  Current this->isMetric before change: "); // Removed
+    // SerialDebug.println(this->isMetric ? "true (metric)" : "false (imperial)"); // Removed
 
     if (this->isMetric != metric_param || metric_param != this->isMetric) // Ensure change or re-application of default
     {
@@ -142,22 +142,22 @@ void FeedRateManager::setMetric(bool metric_param) // Renamed to avoid confusion
         if (this->isMetric)
         {
             this->currentIndex = findFeedRateIndex(metricFeedRates, metricFeedRatesCount, 0.10);
-            SerialDebug.println("  Switched to METRIC, default 0.10 mm/rev selected.");
+            // SerialDebug.println("  Switched to METRIC, default 0.10 mm/rev selected."); // Removed
         }
         else
         {
             this->currentIndex = findFeedRateIndex(imperialFeedRates, imperialFeedRatesCount, 0.0020);
-            SerialDebug.println("  Switched to IMPERIAL, default 0.0020 inch/rev selected.");
+            // SerialDebug.println("  Switched to IMPERIAL, default 0.0020 inch/rev selected."); // Removed
         }
-        SerialDebug.print("  New currentIndex: ");
-        SerialDebug.println(this->currentIndex);
+        // SerialDebug.print("  New currentIndex: "); // Removed
+        // SerialDebug.println(this->currentIndex); // Removed
     }
-    else
-    {
-        SerialDebug.println("  this->isMetric NOT changed (already same value).");
-    }
-    SerialDebug.print("  Current this->isMetric after logic: ");
-    SerialDebug.println(this->isMetric ? "true (metric)" : "false (imperial)");
+    // else // Removed
+    // { // Removed
+    // SerialDebug.println("  this->isMetric NOT changed (already same value)."); // Removed
+    // } // Removed
+    // SerialDebug.print("  Current this->isMetric after logic: "); // Removed
+    // SerialDebug.println(this->isMetric ? "true (metric)" : "false (imperial)"); // Removed
 }
 
 double FeedRateManager::getCurrentValue() const
@@ -207,8 +207,8 @@ void FeedRateManager::getDisplayString(char *buffer, size_t size) const
     }
 
     const FeedRate &current = table[currentIndex];
-    SerialDebug.print("FeedRateManager::getDisplayString - current this->isMetric: ");
-    SerialDebug.println(this->isMetric ? "true (metric)" : "false (imperial)");
+    // SerialDebug.print("FeedRateManager::getDisplayString - current this->isMetric: "); // Removed
+    // SerialDebug.println(this->isMetric ? "true (metric)" : "false (imperial)"); // Removed
     const char *unit = this->isMetric ? "mm/rev" : "inch/rev";
     String float_str; // Arduino String object
 

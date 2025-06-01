@@ -19,13 +19,22 @@ namespace STM32Step
      * @brief Callback function executed by the timer interrupt.
      * Calls the ISR of the current stepper if the system is in a running state.
      */
+    // Add a global ISR counter for debugging
+    volatile uint32_t g_isr_call_count = 0;
+
     void onUpdateCallback()
     {
+        g_isr_call_count++; // Increment on every timer interrupt
+
         if (TimerControl::getCurrentState() == TimerControl::MotorState::RUNNING &&
             TimerControl::currentStepper != nullptr)
         {
+            // SerialDebug.println("TCB: onUpdateCallback -> Calling Stepper ISR"); // Too frequent for serial
             TimerControl::currentStepper->ISR();
         }
+        // else {
+        // SerialDebug.println("TCB: onUpdateCallback - NOT Calling Stepper ISR"); // Too frequent
+        // }
     }
 
     /**

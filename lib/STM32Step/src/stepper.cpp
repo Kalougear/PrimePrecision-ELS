@@ -1,17 +1,18 @@
 #include "stepper.h"
-#include "Config/serial_debug.h" // Only if essential debug prints are kept, otherwise remove
+#include "Config/serial_debug.h"
 #include "Config/SystemConfig.h"
 #include "stm32h7xx_hal.h"
-#include <algorithm> // For std::abs if used, though not currently
+#include <algorithm> // For std::abs if used
+#include <cmath>     // For fabsf
+
+// Make SerialDebug available
+#ifndef SERIAL_DEBUG_INSTANCE_EXTERNED
+#define SERIAL_DEBUG_INSTANCE_EXTERNED
+extern HardwareSerial SerialDebug;
+#endif
 
 namespace STM32Step
 {
-    /**
-     * @brief Constructs a Stepper object.
-     * @param stepPin The GPIO pin number for the STEP signal.
-     * @param dirPin The GPIO pin number for the DIRECTION signal.
-     * @param enablePin The GPIO pin number for the ENABLE signal.
-     */
     Stepper::Stepper(uint8_t stepPin, uint8_t dirPin, uint8_t enablePin)
         : _stepPin(stepPin),
           _dirPin(dirPin),
@@ -20,197 +21,295 @@ namespace STM32Step
           _targetPosition(0),
           _enabled(false),
           _running(false),
-          _currentDirection(false), // Assuming default direction is forward (e.g., false = CW, true = CCW)
+          _currentDirection(false), // Will be set by runContinuous
           _operationMode(OperationMode::IDLE),
-          state(0) // Initial state for the ISR state machine
+          state(0),
+          _isContinuousMode(false),
+          _targetSpeedHz(0.0f),
+          _currentSpeedHz(0.0f),
+          _accelerationStepsPerS2(1000.0f),
+          _nextStepTimeMicros(0),
+          _isrAccumulatedSteps(0.0f),
+          _lastStepTimeMicros(0)
     {
         initPins();
     }
 
-    /**
-     * @brief Destructor for the Stepper object. Ensures the stepper is disabled.
-     */
     Stepper::~Stepper()
     {
         disable();
     }
 
-    /**
-     * @brief Interrupt Service Routine for step generation.
-     * This function is called by a timer interrupt (e.g., TIM1 via TimerControl)
-     * at a high frequency to generate step pulses.
-     * It implements a simple state machine for pulse generation and direction changes.
-     */
+    void Stepper::setSpeedHz(float frequency_hz)
+    {
+        _targetSpeedHz = (frequency_hz > 0.0f) ? frequency_hz : 0.0f;
+    }
+
+    void Stepper::setAcceleration(float accel_steps_per_s2)
+    {
+        // Acceleration is currently bypassed in ISR for jog mode testing
+        _accelerationStepsPerS2 = (accel_steps_per_s2 > 0.0f) ? accel_steps_per_s2 : 1000.0f;
+    }
+
+    void Stepper::runContinuous(bool direction)
+    {
+        if (!_enabled)
+        {
+            SerialDebug.println("Stepper::runContinuous - Stepper not enabled, cannot run.");
+            return;
+        }
+        if (!_isContinuousMode && _running) // If ELS was running
+        {
+            stop(); // Stop ELS first
+        }
+
+        _currentDirection = direction; // Store the logical direction
+
+        // Set physical direction pin state ONCE here
+        bool zAxisInvertDir = SystemConfig::RuntimeConfig::Z_Axis::invert_direction;
+        bool physicalDirPinState;
+        if (_currentDirection) // true for AWAY_FROM_CHUCK
+        {
+            physicalDirPinState = zAxisInvertDir ? LOW : HIGH;
+        }
+        else // false for TOWARDS_CHUCK
+        {
+            physicalDirPinState = zAxisInvertDir ? HIGH : LOW;
+        }
+
+        SerialDebug.print("Stepper::runContinuous - Setting DIR: _curDir=");
+        SerialDebug.print(_currentDirection);
+        SerialDebug.print(" ZInv=");
+        SerialDebug.print(zAxisInvertDir);
+        SerialDebug.print(" physState=");
+        SerialDebug.println(physicalDirPinState);
+
+        if (physicalDirPinState == HIGH)
+        {
+            GPIO_SET_DIRECTION();
+        }
+        else
+        {
+            GPIO_CLEAR_DIRECTION();
+        }
+
+        // Small delay after setting direction, before starting pulses (optional, but good practice)
+        // HAL_Delay(1); // 1ms might be too long, consider a microsecond delay if needed, e.g. using a NOP loop or DWT cycle counter
+
+        _isContinuousMode = true;
+        _currentSpeedHz = 0.0f; // ISR will set this from _targetSpeedHz (accel bypassed)
+        _isrAccumulatedSteps = 0.0f;
+        _lastStepTimeMicros = micros();
+        _nextStepTimeMicros = micros(); // Schedule first step check immediately
+        state = 0;                      // Reset pulse state machine
+
+        _running = true;
+        TimerControl::start(this);
+    }
+
+    volatile uint32_t g_stepper_isr_entry_count = 0;
+    // static uint32_t s_dir_debug_print_counter = 0; // No longer needed in ISR
+
     void Stepper::ISR(void)
     {
-        // Only operate if enabled and running (i.e., a move is in progress)
+        g_stepper_isr_entry_count++;
+
         if (!_enabled || !_running)
         {
-            state = 0;         // Reset state machine
-            GPIO_CLEAR_STEP(); // Ensure step pin is low if not actively stepping
-            return;
-        }
-
-        // Check if the target position has been reached
-        int32_t positionDifference = _targetPosition - _currentPosition;
-        if (positionDifference == 0)
-        {
-            _running = false;  // Stop running
-            state = 0;         // Reset state machine
-            GPIO_CLEAR_STEP(); // Ensure step pin is low
-            // Note: TimerControl::stop() is NOT called here to allow TIM1 to continue running.
-            // The ISR will just return early if !_running.
-            // This prevents issues with rapid start/stop of TIM1.
-            return;
-        }
-
-        // Determine required direction for this ISR cycle
-        bool moveForward = positionDifference > 0;
-
-        // State machine for step pulse generation
-        switch (state)
-        {
-        case 0: // Idle/Check state: Determine if direction change or step pulse is needed
-        {
-            if (moveForward != _currentDirection)
+            state = 0;
+            GPIO_CLEAR_STEP();
+            if (_isContinuousMode)
             {
-                // Direction change required
-                _currentDirection = moveForward;
-                if (moveForward)
-                    GPIO_SET_DIRECTION(); // Set direction pin accordingly
+                _isContinuousMode = false;
+                _currentSpeedHz = 0.0f;
+            }
+            return;
+        }
+
+        if (_isContinuousMode)
+        {
+            uint32_t currentTimeMicros = micros();
+
+            // NO ACCELERATION - Direct speed control
+            if (_targetSpeedHz > 0.01f)
+            {
+                _currentSpeedHz = _targetSpeedHz;
+            }
+            else
+            {
+                _currentSpeedHz = 0.0f;
+            }
+
+            if (_currentSpeedHz > 0.01f)
+            {
+                float timePerStepMicros = (1.0f / _currentSpeedHz) * 1e6f;
+
+                // DIR PIN IS NO LONGER SET HERE for continuous mode. It's set once in runContinuous().
+
+                // Pulse generation state machine
+                if (state == 0 && (int32_t)(currentTimeMicros - _nextStepTimeMicros) >= 0)
+                {
+                    GPIO_SET_STEP();
+                    _nextStepTimeMicros = currentTimeMicros + static_cast<uint32_t>(timePerStepMicros);
+                    state = 1;
+                }
+                else if (state == 1)
+                {
+                    GPIO_CLEAR_STEP();
+                    state = 0;
+                }
+            }
+            else
+            {
+                GPIO_CLEAR_STEP();
+                state = 0;
+
+                if (_targetSpeedHz < 0.01f)
+                {
+                    _running = false;
+                    _isContinuousMode = false;
+                }
+            }
+        }
+        else
+        {
+            // ELS Position Mode Logic (unchanged)
+            int32_t positionDifference = _targetPosition - _currentPosition;
+            if (positionDifference == 0)
+            {
+                _running = false;
+                state = 0;
+                GPIO_CLEAR_STEP();
+                return;
+            }
+            bool moveForward = positionDifference > 0;
+            switch (state)
+            {
+            case 0:
+            {
+                if (moveForward != _currentDirection)
+                {
+                    _currentDirection = moveForward;
+                    bool set_dir_pin_high = moveForward ? !SystemConfig::RuntimeConfig::Z_Axis::invert_direction : SystemConfig::RuntimeConfig::Z_Axis::invert_direction;
+                    if (set_dir_pin_high)
+                        GPIO_SET_DIRECTION();
+                    else
+                        GPIO_CLEAR_DIRECTION();
+                    state = 1;
+                }
                 else
-                    GPIO_CLEAR_DIRECTION();
-                state = 1; // Move to state 1 for direction setup delay
+                {
+                    GPIO_SET_STEP();
+                    state = 2;
+                }
             }
-            else
-            {
-                // Direction is correct, initiate a step pulse
-                GPIO_SET_STEP(); // Set step pin HIGH
-                state = 2;       // Move to state 2 (step pin is high)
+            break;
+            case 1:
+                state = 0;
+                break;
+            case 2:
+                GPIO_CLEAR_STEP();
+                if (_currentDirection)
+                    _currentPosition++;
+                else
+                    _currentPosition--;
+                state = 0;
+                break;
             }
-        }
-        break;
-
-        case 1:        // Direction Change Delay state: Allows time for direction signal to settle before pulsing.
-                       // In this simple model, it's a one-cycle delay.
-            state = 0; // Next ISR call, re-evaluate (will now proceed to step if dir is set)
-            break;
-
-        case 2:                // Step Pulse High state: Step pin is currently HIGH.
-            GPIO_CLEAR_STEP(); // Set step pin LOW to complete the pulse
-            if (_currentDirection)
-                _currentPosition++; // Increment/decrement software position counter
-            else
-                _currentPosition--;
-            state = 0; // Return to Idle/Check state for next pulse or stop
-            break;
-            // No default case: Assumes states 0, 1, 2 are the only valid states.
         }
     }
 
-    /**
-     * @brief Sets the absolute target position for the stepper motor.
-     * If the motor is not already running and the new target is different from the current position,
-     * it starts the motor movement by enabling TimerControl.
-     * @param position The absolute target position in steps.
-     */
     void Stepper::setTargetPosition(int32_t position)
     {
-        if (position != _currentPosition) // Only act if there's a change
+        if (_isContinuousMode)
+        {
+            stop();
+        }
+        _isContinuousMode = false;
+        if (position != _currentPosition)
         {
             _targetPosition = position;
-            if (!_running) // If not already running, start the process
+            if (!_running)
             {
                 _running = true;
-                TimerControl::start(this); // Signal TimerControl to start/resume its timer (TIM1)
+                TimerControl::start(this);
             }
         }
-    }
-
-    /**
-     * @brief Sets a target position relative to the current target position.
-     * @param delta The number of steps to move relative to the current target.
-     *              Positive for forward, negative for reverse.
-     */
-    void Stepper::setRelativePosition(int32_t delta)
-    {
-        if (delta != 0)
+        else if (_running && position == _currentPosition)
         {
-            // New target is relative to the current _targetPosition, not _currentPosition.
-            // This allows queuing of multiple relative moves.
-            setTargetPosition(_targetPosition + delta);
+            stop();
         }
     }
 
-    /**
-     * @brief Stops the motor movement immediately.
-     * Sets the running flag to false and calls TimerControl::stop() to pause the step ISR timer.
-     */
+    void Stepper::setRelativePosition(int32_t delta)
+    {
+        if (_isContinuousMode)
+        {
+            stop();
+        }
+        _isContinuousMode = false;
+        if (delta != 0)
+        {
+            setTargetPosition(_targetPosition + delta);
+        }
+        else if (!_running && delta == 0)
+        {
+            // Do nothing
+        }
+        else if (_running && delta == 0 && _targetPosition == _currentPosition)
+        {
+            stop();
+        }
+    }
+
     void Stepper::stop()
     {
+        if (_isContinuousMode)
+        {
+            _targetSpeedHz = 0.0f;
+        }
+        // _running should be set to false by ISR when _currentSpeedHz becomes 0 if _targetSpeedHz is 0
+        // However, to ensure a command to stop is immediate:
         _running = false;
-        state = 0;            // Reset ISR state machine
-        GPIO_CLEAR_STEP();    // Ensure step pin is low
-        TimerControl::stop(); // Pause the TimerControl timer (TIM1)
+        _isContinuousMode = false;
+        state = 0;
+        GPIO_CLEAR_STEP();
+        TimerControl::stop(); // This will stop ISR calls
     }
 
-    /**
-     * @brief Performs an emergency stop.
-     * Stops motion, disables the motor driver, and signals TimerControl for an emergency stop.
-     */
     void Stepper::emergencyStop()
     {
-        stop();                               // Stop normal stepping and TimerControl
-        disable();                            // Disable the physical motor driver
-        TimerControl::emergencyStopRequest(); // Potentially for TimerControl to handle specific e-stop logic
+        _isContinuousMode = false;
+        _currentSpeedHz = 0.0f;
+        _targetSpeedHz = 0.0f;
+        stop();
+        disable();
+        TimerControl::emergencyStopRequest();
     }
 
-    /**
-     * @brief Enables the stepper motor driver.
-     * Sets the enable pin according to the `invert_enable` configuration.
-     * Resets running state.
-     */
     void Stepper::enable()
     {
         if (_enabled)
             return;
-
-        // Set enable pin based on SystemConfig's invert_enable flag
         HAL_GPIO_WritePin(GPIOE, 1 << _enablePin,
-                          SystemConfig::RuntimeConfig::Stepper::invert_enable ? GPIO_PIN_SET : GPIO_PIN_RESET);
+                          SystemConfig::RuntimeConfig::Z_Axis::enable_polarity_active_high ? GPIO_PIN_SET : GPIO_PIN_RESET);
         _enabled = true;
-        _running = false; // Not running yet, just enabled
-        state = 0;        // Reset ISR state
+        _running = false;
+        state = 0;
     }
 
-    /**
-     * @brief Disables the stepper motor driver.
-     * Stops any motion first, then sets the enable pin to disable the driver.
-     */
     void Stepper::disable()
     {
         if (!_enabled)
             return;
-
-        stop(); // Ensure motor is stopped before disabling
-        // Typically, to disable, the enable pin is set to its inactive state.
-        // Assuming active-low enable, inactive is HIGH.
-        // If active-high, inactive is LOW. This logic depends on the driver's ENA pin spec.
-        // The HBS57 default is active-LOW, so to disable, set ENA HIGH.
+        stop();
         HAL_GPIO_WritePin(GPIOE, 1 << _enablePin,
-                          (SystemConfig::RuntimeConfig::Stepper::invert_enable ? GPIO_PIN_RESET : GPIO_PIN_SET));
+                          SystemConfig::RuntimeConfig::Z_Axis::enable_polarity_active_high ? GPIO_PIN_RESET : GPIO_PIN_SET);
         _enabled = false;
     }
 
-    /**
-     * @brief Sets the microstepping value in the system configuration.
-     * Note: This only updates the software configuration. Physical microstepping
-     * must be set on the stepper driver itself (e.g., via DIP switches).
-     * @param microsteps The desired microstepping value (e.g., 1, 2, 4, 8, ... 256).
-     */
     void Stepper::setMicrosteps(uint32_t microsteps)
     {
-        // Validate microstep values against a list of common valid ones
         static const uint32_t validMicrosteps[] = {1, 2, 4, 8, 16, 32, 64, 128, 256};
         bool isValid = false;
         for (uint32_t valid : validMicrosteps)
@@ -221,77 +320,39 @@ namespace STM32Step
                 break;
             }
         }
-
         if (!isValid)
         {
-            // Optionally log an error or handle invalid microstep value
             return;
         }
-
+        // This updates the SystemConfig, which is used by MotionControl to calculate steps_per_mm etc.
+        // The Stepper class itself, for its ISR, primarily cares about pulse timing based on Hz.
         SystemConfig::RuntimeConfig::Stepper::microsteps = microsteps;
     }
 
-    /**
-     * @brief Initializes the GPIO pins for step, direction, and enable signals.
-     * Configures pins as outputs and sets their initial states.
-     */
     void Stepper::initPins()
     {
-        __HAL_RCC_GPIOE_CLK_ENABLE(); // Ensure GPIO Port E clock is enabled
-
+        __HAL_RCC_GPIOE_CLK_ENABLE();
         GPIO_InitTypeDef GPIO_InitStruct = {0};
-
-        // Configure step pin (e.g., PE9)
-        GPIO_InitStruct.Pin = 1 << (_stepPin & 0x0F); // Use lower 4 bits for pin number on the port
-        GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;   // Push-pull output
-        GPIO_InitStruct.Pull = GPIO_NOPULL;           // No pull-up or pull-down
-        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH; // High speed for fast pulses
+        GPIO_InitStruct.Pin = 1 << (_stepPin & 0x0F);
+        GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+        GPIO_InitStruct.Pull = GPIO_NOPULL;
+        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
         HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
-
-        // Configure direction pin (e.g., PE8)
         GPIO_InitStruct.Pin = 1 << (_dirPin & 0x0F);
-        HAL_GPIO_Init(GPIOE, &GPIO_InitStruct); // Same settings as step pin
-
-        // Configure enable pin (e.g., PE7)
+        HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
         GPIO_InitStruct.Pin = 1 << (_enablePin & 0x0F);
-        HAL_GPIO_Init(GPIOE, &GPIO_InitStruct); // Same settings as step pin
-
-        // Set initial pin states
-        GPIO_CLEAR_STEP();                                               // Step pin LOW
-        HAL_GPIO_WritePin(GPIOE, 1 << (_dirPin & 0x0F), GPIO_PIN_RESET); // Direction pin LOW (default direction)
-        // Enable pin state depends on whether it's active-low or active-high
-        HAL_GPIO_WritePin(GPIOE, 1 << (_enablePin & 0x0F),
-                          SystemConfig::RuntimeConfig::Stepper::invert_enable ? GPIO_PIN_SET : GPIO_PIN_RESET); // Initial state for enable (usually enabled if active-low)
-    }
-
-    /** @brief Sets the STEP pin HIGH. */
-    void Stepper::GPIO_SET_STEP()
-    {
-        HAL_GPIO_WritePin(GPIOE, 1 << (_stepPin & 0x0F), GPIO_PIN_SET);
-    }
-
-    /** @brief Sets the STEP pin LOW. */
-    void Stepper::GPIO_CLEAR_STEP()
-    {
-        HAL_GPIO_WritePin(GPIOE, 1 << (_stepPin & 0x0F), GPIO_PIN_RESET);
-    }
-
-    /** @brief Sets the DIRECTION pin HIGH (e.g., for one direction). */
-    void Stepper::GPIO_SET_DIRECTION()
-    {
-        HAL_GPIO_WritePin(GPIOE, 1 << (_dirPin & 0x0F), GPIO_PIN_SET);
-    }
-
-    /** @brief Sets the DIRECTION pin LOW (e.g., for the other direction). */
-    void Stepper::GPIO_CLEAR_DIRECTION()
-    {
+        HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+        GPIO_CLEAR_STEP();
         HAL_GPIO_WritePin(GPIOE, 1 << (_dirPin & 0x0F), GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(GPIOE, 1 << (_enablePin & 0x0F),
+                          SystemConfig::RuntimeConfig::Z_Axis::enable_polarity_active_high ? GPIO_PIN_RESET : GPIO_PIN_SET);
     }
 
-    /**
-     * @brief Gets the current status of the stepper motor.
-     * @return StepperStatus struct containing current state information.
-     */
+    void Stepper::GPIO_SET_STEP() { HAL_GPIO_WritePin(GPIOE, 1 << (_stepPin & 0x0F), GPIO_PIN_SET); }
+    void Stepper::GPIO_CLEAR_STEP() { HAL_GPIO_WritePin(GPIOE, 1 << (_stepPin & 0x0F), GPIO_PIN_RESET); }
+    void Stepper::GPIO_SET_DIRECTION() { HAL_GPIO_WritePin(GPIOE, 1 << (_dirPin & 0x0F), GPIO_PIN_SET); }
+    void Stepper::GPIO_CLEAR_DIRECTION() { HAL_GPIO_WritePin(GPIOE, 1 << (_dirPin & 0x0F), GPIO_PIN_RESET); }
+
     StepperStatus Stepper::getStatus() const
     {
         StepperStatus status;
@@ -299,22 +360,12 @@ namespace STM32Step
         status.running = _running;
         status.currentPosition = _currentPosition;
         status.targetPosition = _targetPosition;
-        status.stepsRemaining = _targetPosition - _currentPosition; // More direct than abs() if sign matters
-        // status.stepsRemaining = std::abs(_targetPosition - _currentPosition); // If only magnitude is needed
+        status.stepsRemaining = _targetPosition - _currentPosition;
         return status;
     }
 
-    /**
-     * @brief Manually increments the current and target software position of the stepper.
-     * Useful for re-synchronizing software position with actual position after an event like encoder overflow.
-     * @param increment The amount to increment the positions by.
-     */
     void Stepper::incrementCurrentPosition(int32_t increment)
     {
-        // This function is intended to adjust the internal reference point.
-        // For example, after an encoder overflow, the absolute encoder count wraps,
-        // but the stepper's perceived absolute position should continue linearly.
-        // So, we adjust both current and target to maintain the same relative distance.
         _currentPosition += increment;
         _targetPosition += increment;
     }

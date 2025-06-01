@@ -58,6 +58,38 @@ public:
     };
 
     /**
+     * @enum JogDirection
+     * @brief Defines the direction for manual jogging.
+     */
+    enum class JogDirection
+    {
+        JOG_NONE,           ///< No jog active or stop jog.
+        JOG_TOWARDS_CHUCK,  ///< Jog carriage towards the chuck.
+        JOG_AWAY_FROM_CHUCK ///< Jog carriage away from the chuck.
+    };
+
+    /**
+     * @enum FeedDirection
+     * @brief Defines the direction of Z-axis feed.
+     */
+    enum class FeedDirection
+    {
+        UNKNOWN,        ///< Feed direction is not determined or feed is not active.
+        TOWARDS_CHUCK,  ///< Z-axis is feeding towards the chuck (typically positive direction).
+        AWAY_FROM_CHUCK ///< Z-axis is feeding away from the chuck (typically negative direction).
+    };
+
+    /**
+     * @enum StopType
+     * @brief Defines how the motor should stop.
+     */
+    enum class StopType
+    {
+        IMMEDIATE_HALT,         ///< Motor power is cut immediately.
+        CONTROLLED_DECELERATION ///< Motor decelerates to a stop using configured acceleration.
+    };
+
+    /**
      * @enum Mode
      * @brief Defines the operational modes for motion control.
      */
@@ -142,11 +174,55 @@ public:
     void stopMotion();
 
     /**
+     * @brief Enables the stepper motor driver.
+     */
+    void enableMotor();
+
+    /**
+     * @brief Disables the stepper motor driver.
+     */
+    void disableMotor();
+
+    /**
      * @brief Initiates an emergency stop.
      * Disables SyncTimer, commands an emergency stop to the stepper (which disables driver),
      * and sets an error state.
      */
     void emergencyStop();
+
+    /**
+     * @brief Requests an immediate stop of motion, with a specified stop type.
+     * This can be used for auto-stop features or other scenarios requiring a halt.
+     * @param type The type of stop to perform (e.g., controlled deceleration).
+     */
+    void requestImmediateStop(StopType type);
+
+    // --- Jogging Control (New) ---
+    /**
+     * @brief Begins continuous jogging motion in the specified direction and speed.
+     * Overrides any ELS-synchronized motion.
+     * @param direction The JogDirection (TOWARDS_CHUCK or AWAY_FROM_CHUCK).
+     * @param speed_mm_per_min The desired jog speed in mm/minute. Speed will be capped by system limits.
+     */
+    void beginContinuousJog(JogDirection direction, float speed_mm_per_min);
+
+    /**
+     * @brief Stops any active continuous jogging motion.
+     */
+    void endContinuousJog();
+
+    /**
+     * @brief Checks if a continuous jog operation is currently active.
+     * @return True if jogging is active, false otherwise.
+     */
+    bool isJogActive() const;
+
+    /**
+     * @brief Checks if any ELS (Electronic Lead Screw) synchronized mode is active.
+     * This includes THREADING, TURNING, or FEEDING modes.
+     * @return True if an ELS mode is active, false otherwise.
+     */
+    bool isElsActive() const;
 
     // --- Status ---
     /**
@@ -156,11 +232,49 @@ public:
     Status getStatus() const;
 
     /**
+     * @brief Checks if the stepper motor driver is currently enabled.
+     * @return True if the motor is enabled, false otherwise.
+     */
+    bool isMotorEnabled() const;
+
+    /**
      * @brief Provides access to the internal Stepper instance.
      * Useful for direct stepper interaction if necessary (e.g., for manual jogging not managed by SyncTimer).
      * @return Pointer to the STM32Step::Stepper instance.
      */
     STM32Step::Stepper *getStepperInstance() { return _stepper; }
+
+    // --- Auto-Stop Feature Control (New) ---
+    /**
+     * @brief Configures the absolute target step position for the auto-stop feature.
+     * @param absoluteSteps The target position in absolute machine steps.
+     * @param enable True to enable the auto-stop feature with this target, false to disable.
+     */
+    void configureAbsoluteTargetStop(int32_t absoluteSteps, bool enable);
+
+    /**
+     * @brief Clears any configured absolute target stop and disables the feature.
+     */
+    void clearAbsoluteTargetStop();
+
+    /**
+     * @brief Checks if the auto-stop target was reached and motion was consequently halted.
+     * This flag is typically reset after being read.
+     * @return True if auto-stop triggered a halt since last check, false otherwise.
+     */
+    bool wasTargetStopReachedAndMotionHalted();
+
+    /**
+     * @brief Gets the current feed direction of the Z-axis.
+     * @return The current FeedDirection.
+     */
+    FeedDirection getCurrentFeedDirection() const;
+
+    /**
+     * @brief Gets the current absolute position of the Z-axis stepper in microsteps.
+     * @return Absolute stepper position in microsteps.
+     */
+    int32_t getCurrentPositionSteps() const;
 
 private:
     // Components
@@ -174,9 +288,16 @@ private:
     Mode _currentMode; ///< Current operational mode.
 
     // State
-    volatile bool _running; ///< True if synchronized motion is active.
-    volatile bool _error;   ///< True if an error has occurred.
-    const char *_errorMsg;  ///< Descriptive error message.
+    volatile bool _running;   ///< True if synchronized motion is active.
+    volatile bool _jogActive; ///< True if a manual jog operation is active.
+    volatile bool _error;     ///< True if an error has occurred.
+    const char *_errorMsg;    ///< Descriptive error message.
+
+    // Auto-Stop Feature State
+    FeedDirection _currentFeedDirection;                ///< Current Z-axis feed direction.
+    volatile bool _targetStopFeatureEnabledForMotion;   ///< True if auto-stop is armed in MotionControl.
+    volatile int32_t _absoluteTargetStopStepsForMotion; ///< Target for auto-stop in absolute steps.
+    volatile bool _targetStopReached;                   ///< Flag set when auto-stop condition met and halt initiated.
 
     // Private methods
     /**
@@ -196,4 +317,10 @@ private:
      * Called by setConfig and potentially by setMode.
      */
     void updateSyncParameters();
+
+    /**
+     * @brief Calculates the comprehensive steps_per_encoder_tick factor and
+     * configures the SyncTimer with it.
+     */
+    void calculateAndSetSyncTimerConfig();
 };

@@ -1,5 +1,11 @@
 #pragma once
 
+// Define the debug level for conditional logging
+// Level 0: No debug output (except direct SerialDebug.print calls not in #if)
+// Level 1: Basic debug messages
+// Level 2: Detailed debug messages (e.g., Lumen packet details)
+#define DEBUG_LEVEL 2
+
 #include <HardwareSerial.h>
 
 /**

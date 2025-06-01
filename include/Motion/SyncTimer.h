@@ -25,11 +25,16 @@ public:
      */
     struct SyncConfig
     {
-        float thread_pitch;     ///< Effective "thread pitch" or desired movement per spindle revolution (e.g., mm/rev).
-        float leadscrew_pitch;  ///< Actual pitch of the leadscrew driving the carriage (e.g., mm).
-                                ///< The ratio thread_pitch/leadscrew_pitch determines electronic gearing.
-        uint32_t update_freq;   ///< Desired frequency (Hz) for the synchronization ISR to run.
-        bool reverse_direction; ///< If true, reverses the calculated stepper direction.
+        double steps_per_encoder_tick; ///< Calculated factor: stepper microsteps per raw encoder tick (double precision)
+        uint32_t update_freq;          ///< Desired frequency (Hz) for the synchronization ISR to run.
+        bool reverse_direction;        ///< If true, reverses the calculated stepper direction.
+
+        // Default constructor
+        SyncConfig() : steps_per_encoder_tick(0.0), // Use 0.0 for double literal
+                       update_freq(10000),          // Default to 10kHz, matches typical MotionControl::_config.sync_frequency
+                       reverse_direction(false)
+        {
+        }
     };
 
     /**
@@ -138,8 +143,8 @@ private:
     STM32Step::Stepper *_stepper; ///< Pointer to the Stepper motor instance.
 
     // Internal state for ISR processing
-    float _accumulatedFractionalSteps; ///< Accumulator for fractional steps between ISR calls.
-    int32_t _isr_lastEncoderCount;     ///< Last encoder count read by the ISR, for calculating delta.
+    double _accumulatedFractionalSteps; ///< Accumulator for fractional steps between ISR calls (double precision).
+    int32_t _isr_lastEncoderCount;      ///< Last encoder count read by the ISR, for calculating delta.
 
     // Private methods
     /**
@@ -158,9 +163,10 @@ private:
 
     /**
      * @brief Calculates the synchronization ratio (electronic gearing).
-     * @return `_config.thread_pitch / _config.leadscrew_pitch`. Returns 0 if leadscrew_pitch is 0.
+     * (Note: With the refactor, this now returns the pre-calculated steps_per_encoder_tick factor)
+     * @return The steps_per_encoder_tick factor.
      */
-    float calculateSyncRatio() const;
+    double calculateSyncRatio() const; // Changed return type to double
 
     // Static instance for ISR callback
     static SyncTimer *instance; ///< Singleton instance pointer for ISR context.
