@@ -12,7 +12,8 @@ EncoderTimer *EncoderTimer::instance = nullptr;
 EncoderTimer::EncoderTimer() : _currentCount(0), // Not strictly used for software extension currently
                                _lastUpdateTime(0),
                                _error(false),
-                               _initialized(false)
+                               _initialized(false),
+                               _indexPulseOccurred(false) // Initialize new member
 {
     // Ensure htim2 structure is zeroed out before use by HAL
     memset(static_cast<void *>(&htim2), 0, sizeof(htim2));
@@ -89,8 +90,17 @@ bool EncoderTimer::initGPIO()
     gpio_config.Pull = GPIO_PULLUP; // Pull-ups are common for encoder inputs
     gpio_config.Speed = GPIO_SPEED_FREQ_HIGH;
     gpio_config.Alternate = GPIO_AF1_TIM2; // Alternate function for TIM2
-
     HAL_GPIO_Init(GPIOA, &gpio_config);
+
+    // Configure PA5 for TIM2_ETR // Temporarily Commenting out PA5 GPIO config as well
+    // GPIO_InitTypeDef gpio_etr_config = {0};
+    // gpio_etr_config.Pin = GPIO_PIN_5; // PA5 for TIM2_ETR
+    // gpio_etr_config.Mode = GPIO_MODE_AF_PP;
+    // gpio_etr_config.Pull = GPIO_NOPULL; // External 5V pull-up will be used as PA5 is 5V tolerant
+    // gpio_etr_config.Speed = GPIO_SPEED_FREQ_HIGH;
+    // gpio_etr_config.Alternate = GPIO_AF1_TIM2; // AF1 for TIM2_ETR on PA5
+    // HAL_GPIO_Init(GPIOA, &gpio_etr_config);
+
     return true; // Assume HAL_GPIO_Init doesn't return status, or check specific HAL version
 }
 
@@ -124,13 +134,33 @@ bool EncoderTimer::initTimer()
 
     if (HAL_TIM_Encoder_Init(&htim2, &encoder_config) != HAL_OK)
     {
+        // SerialDebug.println("CRITICAL: HAL_TIM_Encoder_Init failed!");
         return false; // HAL encoder initialization failed
     }
 
+    // Configure TIM2 Slave Controller for ETR (Index Pulse) // Temporarily Commenting out Slave Config
+    // TIM_SlaveConfigTypeDef sSlaveConfig = {0};
+    // sSlaveConfig.SlaveMode = TIM_SLAVEMODE_RESET;               // Reset counter on ETR
+    // sSlaveConfig.InputTrigger = TIM_TS_ETRF;                    // External Trigger Filtered (ETR)
+    // sSlaveConfig.TriggerPolarity = TIM_TRIGGERPOLARITY_FALLING; // Active LOW Z-pulse (NPN open-collector with pull-up)
+    // sSlaveConfig.TriggerPrescaler = TIM_TRIGGERPRESCALER_DIV1;  // No prescaler
+    // sSlaveConfig.TriggerFilter = 8;                             // Increased filter value (e.g., 8, range 0x0 to 0xF)
+    // if (HAL_TIM_SlaveConfigSynchronization(&htim2, &sSlaveConfig) != HAL_OK)
+    // {
+    //     // SerialDebug.println("CRITICAL: HAL_TIM_SlaveConfigSynchronization for ETR failed!");
+    //     return false;
+    // }
+
     if (HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL) != HAL_OK)
     {
+        // SerialDebug.println("CRITICAL: HAL_TIM_Encoder_Start failed!");
         return false; // Failed to start encoder channels
     }
+
+    // Enable the TIM2 Trigger interrupt for ETR // Keep this commented for Stage 1
+    // __HAL_TIM_ENABLE_IT(&htim2, TIM_IT_TRIGGER);
+    // SerialDebug.println("DEBUG: TIM2 Trigger Interrupt (ETR) enabled.");
+
     return true;
 }
 
@@ -209,6 +239,32 @@ void EncoderTimer::handleOverflow()
     _lastUpdateTime = HAL_GetTick();
     // Add any specific logic for handling a 32-bit counter overflow if necessary.
     // For typical ELS usage, the 32-bit count range is usually sufficient.
+}
+
+/**
+ * @brief Internal callback called when an index pulse (ETR) occurs.
+ * Sets a flag that can be checked by the main application.
+ * This function is called from the HAL_TIM_TriggerCallback.
+ */
+void EncoderTimer::IndexPulse_Callback_Internal()
+{
+    _indexPulseOccurred = true;
+    // SerialDebug.println("DEBUG ISR: Index Pulse (TIM2_ETR) Detected!");
+}
+
+/**
+ * @brief Checks if an index pulse has occurred since the last check.
+ * Clears the flag after reading.
+ * @return True if an index pulse was detected, false otherwise.
+ */
+bool EncoderTimer::hasIndexPulseOccurred()
+{
+    if (_indexPulseOccurred)
+    {
+        _indexPulseOccurred = false; // Clear flag after checking
+        return true;
+    }
+    return false;
 }
 
 /**

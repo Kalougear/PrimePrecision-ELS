@@ -94,6 +94,26 @@ void sendMainPageFeedRateDisplay()
 
 EncoderTimer globalEncoderTimerInstance;
 MotionControl motionCtrl(MotionControl::MotionPins{ACTUAL_STEP_PIN, ACTUAL_DIR_PIN, ACTUAL_ENABLE_PIN});
+
+volatile bool g_exti_pa5_index_pulse_detected = false; // Flag for EXTI-based index pulse
+volatile unsigned long g_last_pa5_interrupt_time = 0;  // For debouncing PA5 EXTI
+const unsigned long PA5_DEBOUNCE_DELAY_MS = 5;         // Debounce delay for PA5 EXTI in milliseconds
+
+// HAL Callback for Timer Trigger Events (e.g., ETR for Index Pulse) // Temporarily Commented Out
+// void HAL_TIM_TriggerCallback(TIM_HandleTypeDef *htim)
+// {
+//     if (htim->Instance == TIM2) // Check if it's TIM2
+//     {
+//         // Check if the Trigger flag is set (this is for ETR, Hall sensor, etc.)
+//         // It's important to check the specific flag if multiple trigger sources could use this callback.
+//         if (__HAL_TIM_GET_FLAG(htim, TIM_FLAG_TRIGGER) != RESET)
+//         {
+//             __HAL_TIM_CLEAR_IT(htim, TIM_IT_TRIGGER);                  // Clear the interrupt flag
+//             globalEncoderTimerInstance.IndexPulse_Callback_Internal(); // Call our handler
+//         }
+//     }
+// }
+
 // FeedRateManager feedRateManager; // Definition moved up
 // char feedRateBuffer[40];         // Definition moved up
 // char hmiDisplayStringBuffer[40]; // This buffer is now static within SetupPageHandler.cpp
@@ -121,6 +141,18 @@ extern "C" void lumen_write_bytes(uint8_t *data, uint32_t length)
 }
 
 // --- ISR Debug Counters (declared in their respective .cpp files) ---
+
+// User ISR for PA5 Index Pulse with Debouncing
+void pa5_index_pulse_isr()
+{
+    unsigned long interrupt_time = millis();
+    if (interrupt_time - g_last_pa5_interrupt_time > PA5_DEBOUNCE_DELAY_MS)
+    {
+        g_exti_pa5_index_pulse_detected = true;
+        g_last_pa5_interrupt_time = interrupt_time;
+    }
+}
+
 namespace STM32Step
 { // Needed for linker to find these
     extern volatile uint32_t g_isr_call_count;
@@ -191,6 +223,22 @@ void setup()
     if (!globalEncoderTimerInstance.begin())
     {
         SerialDebug.println("CRITICAL ERROR: globalEncoderTimerInstance.begin() failed!");
+        while (1)
+            ; // Halt
+    }
+
+    // Configure PA5 for EXTI Index Pulse using Arduino API
+    pinMode(PA5, INPUT); // INPUT or INPUT_PULLUP. Using INPUT as external pull-up is expected.
+                         // PA5 is 5V tolerant. External pull-up to 5V is fine.
+    // Ensure PA5 is mapped to an interrupt number by the framework
+    if (digitalPinToInterrupt(PA5) != NOT_AN_INTERRUPT)
+    {
+        attachInterrupt(digitalPinToInterrupt(PA5), pa5_index_pulse_isr, FALLING);
+        SerialDebug.println("DEBUG: Attached EXTI for PA5 Index Pulse.");
+    }
+    else
+    {
+        SerialDebug.println("CRITICAL ERROR: PA5 cannot be used as an interrupt pin!");
         while (1)
             ; // Halt
     }
@@ -303,6 +351,24 @@ void loop()
     const uint32_t DRO_UPDATE_INTERVAL = 200;     // ms, adjust as needed for responsiveness vs. load
 
     uint32_t currentTime = millis();
+
+    // Check for Encoder Index Pulse via EXTI PA5
+    if (g_exti_pa5_index_pulse_detected)
+    {
+        SerialDebug.println("MainLoop: Index Pulse Detected (EXTI PA5)!");
+        g_exti_pa5_index_pulse_detected = false; // Reset flag
+
+        // Optional: Software reset of TIM2 counter or log count
+        // globalEncoderTimerInstance.reset();
+        // int32_t countAtPulse = globalEncoderTimerInstance.getCount();
+        // SerialDebug.print("Count at EXTI pulse: "); SerialDebug.println(countAtPulse);
+    }
+
+    // Check for Encoder Index Pulse // Temporarily Commented Out
+    // if (globalEncoderTimerInstance.hasIndexPulseOccurred())
+    // {
+    //     SerialDebug.println("MainLoop: Index Pulse Detected (TIM2_ETR on PA5)!");
+    // }
 
     // Print ISR counters periodically for debugging jog
     if (motionCtrl.isJogActive() && (currentTime - last_isr_print_time > 500)) // Print every 500ms if jog is active

@@ -111,6 +111,18 @@ public:
      */
     TIM_HandleTypeDef *getTimerHandle() { return &htim2; }
 
+    /**
+     * @brief To be called from HAL_TIM_TriggerCallback when an index pulse (ETR) occurs.
+     */
+    void IndexPulse_Callback_Internal();
+
+    /**
+     * @brief Checks if an index pulse has occurred since the last check.
+     * Clears the flag upon read.
+     * @return True if an index pulse was detected, false otherwise.
+     */
+    bool hasIndexPulseOccurred();
+
     // --- Static Callback for Timer Interrupts ---
     /**
      * @brief Static callback function for TIM2 update interrupts (overflow/underflow).
@@ -128,6 +140,7 @@ private:
     volatile uint32_t _lastUpdateTime; ///< Timestamp of the last ISR update or significant event.
     volatile bool _error;              ///< Flag indicating an error state.
     bool _initialized;                 ///< True if begin() has been successfully called.
+    volatile bool _indexPulseOccurred; ///< Flag set by IndexPulse_Callback_Internal, cleared by hasIndexPulseOccurred.
 
     // Initialization methods
     bool initGPIO();  ///< Initializes GPIO pins for TIM2 encoder channels.
