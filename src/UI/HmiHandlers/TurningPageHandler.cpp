@@ -573,8 +573,6 @@ namespace TurningPageHandler
             rpmPacket.data._s32 = static_cast<int32_t>(abs(motionControl->getStatus().spindle_rpm)); // Use abs for positive display
             lumen_write_packet(&rpmPacket);
             lastRpmUpdateTimeMs_Handler = currentTime;
-            SerialDebug.print("TPH: Sent RPM (131) -> ");
-            SerialDebug.println(rpmPacket.data._s32); // Optional debug
         }
     }
 

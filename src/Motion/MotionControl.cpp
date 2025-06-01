@@ -310,18 +310,6 @@ MotionControl::Status MotionControl::getStatus() const
     float encoderPulleyTeeth = static_cast<float>(SystemConfig::RuntimeConfig::Spindle::encoder_pulley_teeth);
     float actualSpindleRpm = 0.0f;
 
-    // Debug print for RPM calculation inputs
-    static uint32_t getStatusDebugCounter = 0;
-    if (++getStatusDebugCounter % 10 == 0) // Log roughly every 10 calls
-    {
-        SerialDebug.print("MC::getStatus: encRPM=");
-        SerialDebug.print(encoderRpm);
-        SerialDebug.print(", encTeeth=");
-        SerialDebug.print(encoderPulleyTeeth);
-        SerialDebug.print(", chuckTeeth=");
-        SerialDebug.println(chuckPulleyTeeth);
-    }
-
     if (chuckPulleyTeeth > 0.00001f)
     {
         actualSpindleRpm = encoderRpm * (encoderPulleyTeeth / chuckPulleyTeeth);
