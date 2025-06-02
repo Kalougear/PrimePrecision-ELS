@@ -143,8 +143,9 @@ private:
     STM32Step::Stepper *_stepper; ///< Pointer to the Stepper motor instance.
 
     // Internal state for ISR processing
-    double _accumulatedFractionalSteps; ///< Accumulator for fractional steps between ISR calls (double precision).
-    int32_t _isr_lastEncoderCount;      ///< Last encoder count read by the ISR, for calculating delta.
+    // double _accumulatedFractionalSteps; // Removed for Hardware-Assisted Single Stepping
+    volatile int64_t _currentAccumulatedEncoderPos; ///< Software-accumulated 64-bit encoder position, handles wraps.
+    int32_t _isr_lastEncoderCount;                  ///< Last raw 32-bit encoder count read by the ISR, for calculating delta and detecting wraps.
 
     // Private methods
     /**

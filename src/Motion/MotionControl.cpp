@@ -97,6 +97,7 @@ bool MotionControl::begin()
     }
 
     _error = false; // Clear any error state if all initializations passed
+    SerialDebug.println("MC::begin() - SUCCESSFUL.");
     return true;
 }
 
@@ -181,6 +182,7 @@ void MotionControl::setConfig(const Config &config)
  */
 void MotionControl::startMotion()
 {
+    SerialDebug.println("MC::startMotion() - CALLED.");
     if (_jogActive && _stepper)
     { // If a jog is active, stop it before starting ELS motion
         endContinuousJog();
@@ -247,6 +249,7 @@ void MotionControl::startMotion()
     SerialDebug.print("MC::startMotion - Effective _currentFeedDirection set to: ");
     SerialDebug.println((_currentFeedDirection == FeedDirection::AWAY_FROM_CHUCK) ? "AWAY_FROM_CHUCK (steps increasing)" : "TOWARDS_CHUCK (steps decreasing)");
 
+    SerialDebug.println("MC::startMotion() - Components enabled, _running will be set to true.");
     _running = true;
     _error = false; // Clear any previous error on successful start
 }
@@ -448,6 +451,31 @@ void MotionControl::calculateAndSetSyncTimerConfig()
     double spindle_pulley_teeth = static_cast<double>(SystemConfig::RuntimeConfig::Spindle::chuck_pulley_teeth);
     double encoder_pulley_teeth = static_cast<double>(SystemConfig::RuntimeConfig::Spindle::encoder_pulley_teeth);
 
+    SerialDebug.println("---- MC::calculateAndSetSyncTimerConfig ----");
+    SerialDebug.print("Input: target_feed_mm_spindle_rev (_config.thread_pitch): ");
+    SerialDebug.println(target_feed_mm_spindle_rev, 6);
+
+    SerialDebug.println("-- SystemConfig Parameters Read --");
+    SerialDebug.print("Encoder::ppr (enc_ppr): ");
+    SerialDebug.println(enc_ppr);
+    SerialDebug.print("Encoder::QUADRATURE_MULT (quad_mult): ");
+    SerialDebug.println(quad_mult);
+    SerialDebug.print("Spindle::chuck_pulley_teeth (spindle_pulley_teeth): ");
+    SerialDebug.println(spindle_pulley_teeth);
+    SerialDebug.print("Spindle::encoder_pulley_teeth (encoder_pulley_teeth): ");
+    SerialDebug.println(encoder_pulley_teeth);
+    SerialDebug.print("Z_Axis::driver_pulses_per_rev: ");
+    SerialDebug.println(SystemConfig::RuntimeConfig::Z_Axis::driver_pulses_per_rev);
+    SerialDebug.print("Z_Axis::motor_pulley_teeth: ");
+    SerialDebug.println(SystemConfig::RuntimeConfig::Z_Axis::motor_pulley_teeth);
+    SerialDebug.print("Z_Axis::lead_screw_pulley_teeth: ");
+    SerialDebug.println(SystemConfig::RuntimeConfig::Z_Axis::lead_screw_pulley_teeth);
+    SerialDebug.print("Z_Axis::lead_screw_pitch (ls_pitch_val): ");
+    SerialDebug.println(SystemConfig::RuntimeConfig::Z_Axis::lead_screw_pitch);
+    SerialDebug.print("Z_Axis::leadscrew_standard_is_metric: ");
+    SerialDebug.println(SystemConfig::RuntimeConfig::Z_Axis::leadscrew_standard_is_metric ? "METRIC" : "IMPERIAL (TPI)");
+
+    SerialDebug.println("-- Initial Provided Debug Prints --");
     // Debug print for sync calculation inputs
     SerialDebug.print("MC::calcSync: target_feed=");
     SerialDebug.print(target_feed_mm_spindle_rev);
@@ -486,19 +514,54 @@ void MotionControl::calculateAndSetSyncTimerConfig()
     }
     double ls_pitch_val = static_cast<double>(SystemConfig::RuntimeConfig::Z_Axis::lead_screw_pitch);
     bool ls_is_metric = SystemConfig::RuntimeConfig::Z_Axis::leadscrew_standard_is_metric;
-    double ls_pitch_mm_per_ls_rev = ls_is_metric ? ls_pitch_val : ls_pitch_val * 25.4;
-    if (std::abs(ls_pitch_mm_per_ls_rev) < 0.000001)
+    // Corrected TPI to mm/rev conversion: (1.0 / TPI_value) * 25.4
+    double ls_pitch_mm_per_ls_rev = ls_is_metric ? ls_pitch_val : ((ls_pitch_val == 0) ? 1.0 : (25.4 / ls_pitch_val));
+    if (std::abs(ls_pitch_mm_per_ls_rev) < 0.000001) // Avoid div by zero if ls_pitch_val was 0 and then corrected
         ls_pitch_mm_per_ls_rev = 1.0;
+
+    SerialDebug.println("-- Intermediate Calculated Values --");
+    SerialDebug.print("enc_counts_per_spindle_rev: ");
+    SerialDebug.println(enc_counts_per_spindle_rev, 6);
+    SerialDebug.print("s_motor_total_usteps: ");
+    SerialDebug.println(s_motor_total_usteps);
+    SerialDebug.print("G_ls_rev_per_motor_rev (Leadscrew rev per Z-motor rev): ");
+    SerialDebug.println(G_ls_rev_per_motor_rev, 6);
+    SerialDebug.print("ls_pitch_mm_per_ls_rev (Leadscrew pitch in mm/rev): ");
+    SerialDebug.println(ls_pitch_mm_per_ls_rev, 6);
+
     double mm_travel_per_motor_rev = G_ls_rev_per_motor_rev * ls_pitch_mm_per_ls_rev;
-    if (std::abs(mm_travel_per_motor_rev) < 0.000001)
+    if (std::abs(mm_travel_per_motor_rev) < 0.000001) // Avoid div by zero
         mm_travel_per_motor_rev = 1.0;
+    SerialDebug.print("mm_travel_per_motor_rev (Carriage travel in mm per Z-motor rev): ");
+    SerialDebug.println(mm_travel_per_motor_rev, 6);
+
     double usteps_per_mm_travel = s_motor_total_usteps / mm_travel_per_motor_rev;
+    SerialDebug.print("usteps_per_mm_travel (Stepper microsteps per mm of carriage travel): ");
+    SerialDebug.println(usteps_per_mm_travel, 6);
+
     double mm_travel_per_enc_count = target_feed_mm_spindle_rev / enc_counts_per_spindle_rev;
+    SerialDebug.print("mm_travel_per_enc_count (Carriage travel in mm per encoder quadrature tick): ");
+    SerialDebug.println(mm_travel_per_enc_count, 9);
+
     double calculated_steps_per_encoder_tick = mm_travel_per_enc_count * usteps_per_mm_travel;
+    SerialDebug.print("FINAL: calculated_steps_per_encoder_tick: ");
+    SerialDebug.println(calculated_steps_per_encoder_tick, 9);
+    SerialDebug.println("--------------------------------------");
 
     SyncTimer::SyncConfig newSyncTimerConfig;
     newSyncTimerConfig.steps_per_encoder_tick = calculated_steps_per_encoder_tick;
-    newSyncTimerConfig.update_freq = _config.sync_frequency;
+
+    // The line "SyncTimer::SyncConfig newSyncTimerConfig;" is already declared above this replaced block.
+    // The line "newSyncTimerConfig.steps_per_encoder_tick = calculated_steps_per_encoder_tick;" is also already done.
+
+    // For this test, let's force SyncTimer frequency to 50kHz for software bit-banging
+    // User should ensure SystemConfig::Limits::Stepper::PULSE_WIDTH_US is appropriate (e.g., 5us)
+    // MAX_STEP_FREQ_HZ is less critical for bit-banged ELS steps but set to 20kHz.
+    // Forcing to 5kHz for this test to reduce step command rate.
+    newSyncTimerConfig.update_freq = 5000; // Changed from 50000 to 5000
+    SerialDebug.print("MC::calcAndSetSyncTimerCfg - DEBUG: Forcing SyncTimer update_freq for Bit-Bang Test to: ");
+    SerialDebug.println(newSyncTimerConfig.update_freq);
+
     newSyncTimerConfig.reverse_direction = false;
     _syncTimer.setConfig(newSyncTimerConfig);
 }

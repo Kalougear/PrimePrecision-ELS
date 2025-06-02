@@ -113,6 +113,12 @@ namespace STM32Step
         /** @brief Gets the current operational state of the TimerControl. @return MotorState */
         static MotorState getCurrentState() { return currentState; }
 
+        /**
+         * @brief Gets the pulse width in microseconds that was configured during TimerControl::init().
+         * @return The configured pulse width in microseconds.
+         */
+        static uint32_t getConfiguredPulseWidthUs() { return _configuredPulseWidthUs; }
+
     private:
         // Private helper methods (if any specific to PWM, not currently used by software stepping)
         // static void configurePWM(); // Example if PWM mode was being configured here
@@ -121,6 +127,8 @@ namespace STM32Step
         static volatile MotorState currentState; ///< Current state of the TimerControl.
         static volatile bool emergencyStop;      ///< Flag indicating an emergency stop has been requested.
         static volatile bool positionReached;    ///< Flag indicating the target position was reached (used by isTargetPositionReached).
+
+        static uint32_t _configuredPulseWidthUs; ///< Stores the pulse width configured in init().
     };
 
 } // namespace STM32Step

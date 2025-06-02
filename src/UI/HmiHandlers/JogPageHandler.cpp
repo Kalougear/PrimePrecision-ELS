@@ -219,8 +219,8 @@ namespace JogPageHandler
             if (packet->type == kBool)
             {
                 bool jogLeftPressed = packet->data._bool;
-                // SerialDebug.print(" -> Jog Left (185) HMI value: ");
-                // SerialDebug.println(jogLeftPressed ? "PRESSED" : "RELEASED");
+                SerialDebug.print("JogPageHandler: RX Addr 185 (Jog Left), Value: ");
+                SerialDebug.println(jogLeftPressed ? "TRUE (Pressed)" : "FALSE (Released)");
 
                 if (jogLeftPressed)
                 {
@@ -248,8 +248,8 @@ namespace JogPageHandler
             if (packet->type == kBool)
             {
                 bool jogRightPressed = packet->data._bool;
-                // SerialDebug.print(" -> Jog Right (186) HMI value: ");
-                // SerialDebug.println(jogRightPressed ? "PRESSED" : "RELEASED");
+                SerialDebug.print("JogPageHandler: RX Addr 186 (Jog Right), Value: ");
+                SerialDebug.println(jogRightPressed ? "TRUE (Pressed)" : "FALSE (Released)");
 
                 if (jogRightPressed)
                 {

@@ -39,10 +39,11 @@ namespace SystemConfig
             static constexpr uint16_t STEPS_PER_REV = 200;
 
             // Timing parameters moved from TimingConfig
-            static constexpr uint32_t CYCLE_TIME_US = 5;   // Base cycle time (μs)
-            static constexpr uint32_t PULSE_WIDTH_US = 5;  // Step pulse width (μs)
-            static constexpr uint32_t DIR_SETUP_US = 6;    // Direction setup time (μs)
-            static constexpr uint32_t ENABLE_SETUP_US = 5; // Enable setup time (μs)
+            static constexpr uint32_t CYCLE_TIME_US = 5;        // Base cycle time (μs)
+            static constexpr uint32_t PULSE_WIDTH_US = 5;       // Step pulse width (μs)
+            static constexpr uint32_t DIR_SETUP_US = 6;         // Direction setup time (μs)
+            static constexpr uint32_t ENABLE_SETUP_US = 5;      // Enable setup time (μs)
+            static constexpr uint32_t MAX_STEP_FREQ_HZ = 20000; // Max frequency for OPM step pulse bursts (e.g., for non-ELS or multi-step)
         };
 
         // NEW: General system limits and defaults

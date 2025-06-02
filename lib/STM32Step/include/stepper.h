@@ -104,11 +104,24 @@ namespace STM32Step
         void setTargetPosition(int32_t position);
 
         /**
-         * @brief Sets a target position relative to the current target.
-         * Useful for commanding incremental moves.
-         * @param delta Number of steps to move relative to the current target.
+         * @brief Sets a target position relative to the current target, primarily for ELS mode.
+         * This will internally call executePwmSteps to generate the required pulses.
+         * @brief Sets a target position relative to the current target, primarily for ELS mode.
+         * This will internally call executePwmSteps to generate the required pulses.
+         * @param delta Number of steps to move. Positive for one direction, negative for the other.
+         * @param syncTimerPeriodUs The period of the calling SyncTimer in microseconds for paced ELS steps.
+         *                          If 0 (default), steps are burst at MAX_STEP_FREQ_HZ (for non-paced moves).
          */
-        void setRelativePosition(int32_t delta);
+        void setRelativePosition(int32_t delta, uint32_t syncTimerPeriodUs = 0);
+
+        /**
+         * @brief Executes a specific number of steps using hardware PWM in One-Pulse Mode (or equivalent).
+         * This is intended for ELS synchronization or general relative moves.
+         * @param numSteps The number of steps to execute. Positive for one direction, negative for the other.
+         * @param syncTimerPeriodUs The period of the calling SyncTimer in microseconds for paced ELS steps.
+         *                          If 0 (default), steps are burst at MAX_STEP_FREQ_HZ.
+         */
+        void executePwmSteps(int32_t numSteps, uint32_t syncTimerPeriodUs = 0);
 
         /** @brief Gets the current software-tracked position. @return Current position in steps. */
         int32_t getCurrentPosition() const { return _currentPosition; }
@@ -128,10 +141,28 @@ namespace STM32Step
          * Called by TimerControl at high frequency to produce step pulses.
          * This should be public for TimerControl to call but not typically by user code.
          */
+        /**
+         * @brief Interrupt Service Routine for step generation (Software Stepping ONLY).
+         * Called by TimerControl at high frequency to produce step pulses.
+         * This should be public for TimerControl to call but not typically by user code.
+         * @deprecated With hardware PWM, this ISR is no longer the primary step generation mechanism.
+         */
         void ISR(void);
 
+        // --- PWM Control Methods (New/Adapted for Hardware PWM) ---
+        /**
+         * @brief Starts PWM output at the frequency set by setSpeedHz().
+         * @param direction True for one direction, false for the other. Sets DIR pin.
+         */
+        void startPwm(bool direction);
+
+        /**
+         * @brief Stops PWM output.
+         */
+        void stopPwm();
+
     protected:
-        friend class TimerControl; // Allow TimerControl to access protected/private members if needed (e.g. _running)
+        friend class TimerControl; // Allow TimerControl to access protected/private members if needed (e.g. _running, or to update PWM regs)
 
         /**
          * @brief Initializes GPIO pins for step, direction, and enable signals.
@@ -157,24 +188,25 @@ namespace STM32Step
 
         // State variables
         volatile bool _enabled;            ///< True if driver is enabled.
-        volatile bool _running;            ///< True if motor is actively moving to a target.
+        volatile bool _running;            ///< True if motor is actively moving (either ELS target or continuous PWM).
         volatile bool _currentDirection;   ///< Current direction state (e.g. false=CW, true=CCW). Used by both modes.
-        volatile int32_t _currentPosition; ///< Current software position in steps (primarily for ELS mode).
+        volatile int32_t _currentPosition; ///< Current software position in steps (primarily for ELS mode, needs update if PWM runs).
         volatile int32_t _targetPosition;  ///< Target software position in steps (primarily for ELS mode).
         OperationMode _operationMode;      ///< Current operational mode.
-        uint8_t state;                     ///< State for the ISR's internal step generation state machine (for ELS position mode).
 
-        // New members for continuous speed mode with acceleration
-        volatile bool _isContinuousMode;       ///< True if operating in continuous speed mode.
-        volatile float _targetSpeedHz;         ///< Target speed in Hz for continuous mode.
-        volatile float _currentSpeedHz;        ///< Current instantaneous speed in Hz during acceleration/deceleration.
-        float _accelerationStepsPerS2;         ///< Acceleration rate in steps/s^2.
-        volatile uint32_t _nextStepTimeMicros; ///< Timestamp for the next step in continuous mode ISR.
-                                               ///< Stores the micros() value when the next step should occur.
-        volatile float _isrAccumulatedSteps;   ///< For accumulating fractional steps at lower speeds/frequencies in ISR.
-                                               ///< Or, could be used to track progress during acceleration.
-                                               ///< Alternative: _timePerStepMicros = 1.0f / _currentSpeedHz * 1e6;
-        volatile uint32_t _lastStepTimeMicros; ///< Timestamp of the last step taken, for acceleration calculations.
+        // Software ISR state (becomes less relevant with HW PWM for step generation)
+        uint8_t _softIsrState; ///< State for the software ISR's internal step generation state machine (for ELS position mode if SW stepping).
+
+        // Members for continuous speed mode (now primarily for PWM frequency control)
+        volatile bool _isContinuousMode; ///< True if operating in continuous speed mode (PWM).
+        volatile float _targetSpeedHz;   ///< Target step frequency in Hz for PWM continuous mode.
+        volatile float _currentSpeedHz;  ///< Current instantaneous speed in Hz during acceleration/deceleration (used by old ISR).
+        float _accelerationStepsPerS2;   ///< Acceleration rate in steps/s^2 (used by old ISR).
+
+        // Software ISR timing (becomes less relevant with HW PWM for step generation)
+        volatile uint32_t _nextStepTimeMicros; ///< Timestamp for the next step in software ISR.
+        volatile float _isrAccumulatedSteps;   ///< For accumulating fractional steps in software ISR.
+        volatile uint32_t _lastStepTimeMicros; ///< Timestamp of the last step taken in software ISR.
     };
 
 } // namespace STM32Step

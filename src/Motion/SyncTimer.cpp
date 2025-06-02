@@ -19,7 +19,8 @@ SyncTimer::SyncTimer() : _timer(nullptr),
                          _timerFrequency(1000), // Default 1kHz, will be overridden by setConfig
                          _encoder(nullptr),
                          _stepper(nullptr),
-                         _accumulatedFractionalSteps(0.0f),
+                         // _accumulatedFractionalSteps(0.0f), // Removed
+                         _currentAccumulatedEncoderPos(0LL), // Added initialization for new member
                          _isr_lastEncoderCount(0)
 {
 }
@@ -131,27 +132,54 @@ void SyncTimer::calculateTimerParameters(uint32_t freq, uint32_t &prescaler, uin
     // SystemCoreClock might be HCLK. Need to get specific timer clock.
     // Assuming SystemCoreClock is a placeholder for the actual TIM6 input clock frequency.
     // For STM32H7, TIM6 clock is from rcc_pclk1 if APB1 prescaler is 1, else 2*PCLK1.
-    // Let's assume PCLK1 is SystemCoreClock / APB1_Prescaler.
-    // For simplicity here, using SystemCoreClock directly; refine if specific clock source is known and different.
-    uint32_t timerClock = SystemCoreClock; // TODO: Confirm actual TIM6 clock source and frequency
-    uint32_t targetTicks = timerClock / freq;
+    // From SystemClock.cpp: PCLK1 = HCLK / 2; HCLK = SYSCLK / 2. SYSCLK = 400MHz.
+    // So, PCLK1 = 100MHz. APB1CLKDivider = RCC_APB1_DIV2, so TIM6CLK = 2 * PCLK1 = 200MHz.
+    uint32_t pclk1Freq = HAL_RCC_GetPCLK1Freq();
+    uint32_t tim6Clock;
+    if ((RCC->D2CFGR & RCC_D2CFGR_D2PPRE1) == RCC_APB1_DIV1) // Check APB1 Prescaler
+    {
+        tim6Clock = pclk1Freq;
+    }
+    else
+    {
+        tim6Clock = pclk1Freq * 2;
+    }
 
-    prescaler = 1; // Actual register value will be prescaler - 1
+    SerialDebug.print("SyncTimer::calcParams - TIM6CLK: ");
+    SerialDebug.print(tim6Clock / 1000000);
+    SerialDebug.print("MHz, Target Freq: ");
+    SerialDebug.print(freq);
+    SerialDebug.println("Hz");
+
+    uint32_t targetTicks = tim6Clock / freq;
+
+    prescaler = 1; // HardwareTimer lib expects actual factor, so 1 means PSC=0.
+                   // We will set PSC register directly (value - 1) if needed.
     period = targetTicks;
 
     // Adjust prescaler if period exceeds 16-bit timer limit (0xFFFF)
-    while (period > 0xFFFF)
+    // HardwareTimer's setPrescaleFactor takes the factor (1, 2, ...), register is factor-1
+    // HardwareTimer's setOverflow takes the ARR value directly.
+    uint32_t actual_prescaler_reg_val = 0; // This is what goes into PSC register
+    period = targetTicks - 1;              // ARR is targetTicks - 1 if prescaler is 0 (factor 1)
+
+    if (period > 0xFFFF)
     {
-        prescaler++;
-        if (prescaler == 0)
-        {                    // Overflowed prescaler, should not happen with practical frequencies
-            period = 0xFFFF; // Max out period
-            break;
-        }
-        period = targetTicks / prescaler;
+        actual_prescaler_reg_val = (targetTicks / 0xFFFF); // Calculate required PSC value
+        if (actual_prescaler_reg_val > 0xFFFF)
+            actual_prescaler_reg_val = 0xFFFF; // Cap PSC
+        period = (targetTicks / (actual_prescaler_reg_val + 1)) - 1;
+        if (period > 0xFFFF)
+            period = 0xFFFF; // Cap ARR
     }
-    // HardwareTimer library might handle prescaler as (value) or (value-1).
-    // Assuming it expects the factor directly (e.g., 1 for no division beyond clock source).
+    prescaler = actual_prescaler_reg_val + 1; // Store the factor for setPrescaleFactor
+
+    SerialDebug.print("SyncTimer::calcParams - Calculated PSC_REG_VAL: ");
+    SerialDebug.print(actual_prescaler_reg_val);
+    SerialDebug.print(", PrescalerFactor: ");
+    SerialDebug.print(prescaler);
+    SerialDebug.print(", Period (ARR): ");
+    SerialDebug.println(period);
 }
 
 /**
@@ -191,26 +219,34 @@ void SyncTimer::enable(bool enable)
         return;
     }
 
-    _enabled = enable;
-    if (enable)
+    if (enable && !_enabled) // Only reset accumulator when transitioning from disabled to enabled
     {
         if (_encoder)
         {
-            _isr_lastEncoderCount = _encoder->getCount(); // Initialize last count from current encoder position
+            _isr_lastEncoderCount = _encoder->getCount();
+            _currentAccumulatedEncoderPos = _isr_lastEncoderCount; // Initialize accumulated position
         }
         else
         {
-            _isr_lastEncoderCount = 0; // Should not happen if begin() checked properly
+            _isr_lastEncoderCount = 0;
+            _currentAccumulatedEncoderPos = 0;
             _error = true;
-            return; // Critical dependency missing
+            _enabled = false; // Ensure it's marked disabled if error
+            return;
         }
-        _accumulatedFractionalSteps = 0.0f; // Reset accumulator for a clean start
-        _timer->resume();                   // Start or resume the hardware timer
+        // _accumulatedFractionalSteps = 0.0f; // Removed
+        _timer->resume();
     }
-    else
+    else if (enable && _enabled)
+    {
+        // Already enabled, just ensure timer is running (it should be)
+        _timer->resume();
+    }
+    else if (!enable)
     {
         _timer->pause(); // Pause the hardware timer
     }
+    _enabled = enable; // Update the enabled state last
 }
 
 /**
@@ -265,9 +301,9 @@ void SyncTimer::setConfig(const SyncConfig &new_config)
     else if (config_had_significant_change && _initialized)
     {
         // If config changed significantly but timer was not enabled,
-        // still good to reset accumulator. _isr_lastEncoderCount will be set by enable(true) later.
-        SerialDebug.println("SyncTimer::setConfig - Config changed (timer was not enabled), pre-resetting accumulator.");
-        _accumulatedFractionalSteps = 0.0f;
+        // _currentAccumulatedEncoderPos and _isr_lastEncoderCount will be reset by enable(true) when motion starts.
+        // SerialDebug.println("SyncTimer::setConfig - Config changed (timer was not enabled), accumulator will be reset on enable.");
+        // _accumulatedFractionalSteps = 0.0f; // Removed
     }
 }
 
@@ -307,54 +343,71 @@ void SyncTimer::setSyncFrequency(uint32_t freq)
 void SyncTimer::handleInterrupt()
 {
     // Optional: Infrequent debug print for ISR firing confirmation
-    /*
-    static uint32_t isr_call_count = 0;
-    if (++isr_call_count % _timerFrequency == 0) // Approx once per second
+
+    static uint32_t isr_call_count_debug = 0; // Renamed to avoid conflict if other ISRs use similar name
+    // Use _config.update_freq if available and non-zero, otherwise default to a high number to avoid spam
+    uint32_t print_interval_debug = (_config.update_freq > 0) ? _config.update_freq : 10000;
+    if (++isr_call_count_debug % print_interval_debug == 0) // Approx once per second
     {
         SerialDebug.println("SyncTimer ISR firing");
     }
-    */
+    // The above block is for debugging, ensure it's commented for release.
 
     if (!_enabled || !_encoder || !_stepper)
     {
-        // Critical dependencies missing or not enabled, cannot proceed.
         return;
     }
 
-    // Read current encoder count. EncoderTimer::getCount() is assumed ISR-safe
-    // as it directly reads the hardware counter register.
-    int32_t currentCount = _encoder->getCount();
-    int32_t encoderDelta = currentCount - _isr_lastEncoderCount;
+    int32_t raw_current_encoder_count = _encoder->getCount();
+    int32_t raw_delta = raw_current_encoder_count - _isr_lastEncoderCount;
+    // raw_delta handles 32-bit wrap around correctly due to 2's complement arithmetic
 
-    if (encoderDelta != 0)
+    _currentAccumulatedEncoderPos += raw_delta;
+    _isr_lastEncoderCount = raw_current_encoder_count;
+
+    double targetStepperPosDouble = static_cast<double>(_currentAccumulatedEncoderPos) * _config.steps_per_encoder_tick;
+    int32_t targetStepperPosInt = static_cast<int32_t>(std::round(targetStepperPosDouble));
+
+    int32_t currentStepperPos = _stepper->getCurrentPosition(); // Assumes Stepper tracks its absolute position
+    int32_t errorSteps = targetStepperPosInt - currentStepperPos;
+
+    int32_t stepsToCommandThisCycle = 0;
+    if (errorSteps > 0)
     {
-        // Use the pre-calculated steps_per_encoder_tick factor (now double precision)
-        // This factor now carries the sign based on thread_pitch.
-        double floatStepsToCommand = static_cast<double>(encoderDelta) * _config.steps_per_encoder_tick;
+        stepsToCommandThisCycle = 1;
+    }
+    else if (errorSteps < 0)
+    {
+        stepsToCommandThisCycle = -1;
+    }
+    // For very high ISR rates, commanding more than 1 step might be needed if error accumulates.
+    // Example: if (std::abs(errorSteps) > SOME_THRESHOLD) stepsToCommandThisCycle = errorSteps > 0 ? SOME_THRESHOLD : -SOME_THRESHOLD;
+    // For now, stick to single step correction.
 
-        // The _config.reverse_direction logic is removed from here,
-        // as MotionControl now sets it to false, and Stepper::ISR handles physical inversion.
-
-        // Accumulate fractional steps (now double precision)
-        _accumulatedFractionalSteps += floatStepsToCommand;
-
-        // Determine whole integer steps to command
-        // Use std::round for proper rounding to nearest integer
-        int32_t integerStepsToCommand = static_cast<int32_t>(std::round(_accumulatedFractionalSteps));
-
-        if (integerStepsToCommand != 0)
-        {
-            // Command the stepper. Stepper::setRelativePosition and its chain must be ISR-safe.
-            // This involves HAL calls which are generally ISR-safe if brief.
-            _stepper->setRelativePosition(integerStepsToCommand);
-
-            // Subtract the commanded whole steps from the accumulator (now double precision)
-            _accumulatedFractionalSteps -= static_cast<double>(integerStepsToCommand);
-        }
-        _isr_lastEncoderCount = currentCount; // Update last count for next ISR cycle
+    static int debug_print_counter_sync_isr = 0;
+    if (++debug_print_counter_sync_isr % (_config.update_freq / 10) == 0) // Print approx 10 times per second
+    {
+        if (_config.update_freq < 100)
+            debug_print_counter_sync_isr = 0; // Prevent div by zero if freq is too low
+        SerialDebug.print("SyncISR: accEnc=");
+        SerialDebug.print(static_cast<long>(_currentAccumulatedEncoderPos)); // Cast to long for Serial.print if int64_t not supported directly
+        SerialDebug.print(", targetStep=");
+        SerialDebug.print(targetStepperPosInt);
+        SerialDebug.print(", currentStep=");
+        SerialDebug.print(currentStepperPos);
+        SerialDebug.print(", error=");
+        SerialDebug.print(errorSteps);
+        SerialDebug.print(", cmd=");
+        SerialDebug.println(stepsToCommandThisCycle);
     }
 
-    _lastUpdateTime = HAL_GetTick(); // Record time of this ISR execution
+    if (stepsToCommandThisCycle != 0)
+    {
+        // Call with syncTimerPeriodUs = 0 to use fixed-rate OPM burst in Stepper::executePwmSteps
+        _stepper->setRelativePosition(stepsToCommandThisCycle, 0);
+    }
+
+    _lastUpdateTime = HAL_GetTick();
 }
 
 /**
