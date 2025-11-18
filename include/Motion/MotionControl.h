@@ -123,9 +123,10 @@ public:
     /**
      * @brief Initializes all underlying components (EncoderTimer, SyncTimer, Stepper, STM32Step::TimerControl).
      * Must be called before any other operations.
+     * @param encoder A pointer to the global EncoderTimer instance.
      * @return True if all initializations are successful, false otherwise.
      */
-    bool begin();
+    bool begin(EncoderTimer *encoder);
 
     /**
      * @brief Stops motion and de-initializes components.
@@ -276,9 +277,24 @@ public:
      */
     int32_t getCurrentPositionSteps() const;
 
+    // --- Unit Conversion Utilities ---
+    /**
+     * @brief Converts a value from system units (mm or in) to absolute stepper steps.
+     * @param units The value in the current system measurement unit.
+     * @return The equivalent number of absolute stepper microsteps.
+     */
+    int32_t convertUnitsToSteps(float units) const;
+
+    /**
+     * @brief Converts a value from absolute stepper steps to system units (mm or in).
+     * @param steps The value in absolute stepper microsteps.
+     * @return The equivalent value in the current system measurement unit.
+     */
+    float convertStepsToUnits(int32_t steps) const;
+
 private:
     // Components
-    EncoderTimer _encoder;        ///< Instance of EncoderTimer for spindle tracking.
+    EncoderTimer *_encoder;       ///< Pointer to the global EncoderTimer instance.
     SyncTimer _syncTimer;         ///< Instance of SyncTimer for synchronization logic.
     STM32Step::Stepper *_stepper; ///< Pointer to the Stepper motor object.
 

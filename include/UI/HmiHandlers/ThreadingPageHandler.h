@@ -44,6 +44,39 @@ private:
     static void updatePitchDisplay();
     static void loadPitchesForCurrentCategoryAndSetDefault();
     static void updateDRO(); // For Z-Position display
+    static void updateAutoStopTargetDisplay();
+    static void checkAndHandleAutoStopCompletionFlash();
+
+    // Structure to manage timed flashing of HMI elements
+    struct Flasher
+    {
+        bool active = false;
+        uint32_t startTime = 0;
+        uint8_t count = 0;
+        const uint16_t address = 0;
+        const char *message;
+        const uint32_t onTime;
+        const uint32_t offTime;
+
+        Flasher(uint16_t addr, const char *msg, uint32_t on, uint32_t off)
+            : address(addr), message(msg), onTime(on), offTime(off) {}
+
+        void start()
+        {
+            active = true;
+            startTime = millis();
+            count = 0;
+        }
+
+        void stop()
+        {
+            active = false;
+        }
+
+        void update(); // Implementation in .cpp
+    };
+
+    static Flasher _autoStopCompletionFlasher;
 
     // Constructor and destructor are not needed for a static class
     ThreadingPageHandler() = delete;

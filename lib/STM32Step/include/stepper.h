@@ -74,6 +74,10 @@ namespace STM32Step
         bool isEnabled() const { return _enabled; }
         /** @brief Gets detailed status of the stepper motor. @return StepperStatus struct. */
         StepperStatus getStatus() const;
+        /** @brief Checks if the motor is currently running. @return True if running. */
+        bool isRunning() const { return _running; }
+        /** @brief Gets the current speed in steps per second. @return Speed in Hz. */
+        uint32_t getCurrentSpeed() const { return static_cast<uint32_t>(_currentSpeedHz); }
 
         // --- Speed and Acceleration Control (New for Continuous Mode) ---
         /**
@@ -114,6 +118,16 @@ namespace STM32Step
         int32_t getCurrentPosition() const { return _currentPosition; }
         /** @brief Gets the current target position. @return Target position in steps. */
         int32_t getTargetPosition() const { return _targetPosition; }
+        /** @brief Sets the current software position to a specific value. */
+        void setPosition(int32_t position) { _currentPosition = position; }
+        /** @brief Resets the current software position to zero. */
+        void resetPosition()
+        {
+            _currentPosition = 0;
+            _targetPosition = 0;
+        }
+        /** @brief Sets the target speed (alias for setSpeedHz for compatibility). */
+        void setSpeed(uint32_t steps_per_second) { setSpeedHz(static_cast<float>(steps_per_second)); }
 
         /**
          * @brief Manually increments/decrements both current and target software positions.

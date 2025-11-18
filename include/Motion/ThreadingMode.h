@@ -81,6 +81,17 @@ public:
     void activate();   // Call when entering Threading Tab if motor is on
     void deactivate(); // Call when leaving Threading Tab
 
+    // --- Z-Axis Auto-Stop Feature ---
+    void resetAutoStopRuntimeSettings();                              // Clears auto-stop state
+    void setUiAutoStopEnabled(bool enabled);                          // Enables/disables the feature via UI
+    bool isUiAutoStopEnabled() const;                                 // Checks if UI has enabled auto-stop
+    void setUiAutoStopTargetPositionFromString(const char *valueStr); // Sets target from HMI string
+    void grabCurrentZAsUiAutoStopTarget();                            // Sets current Z as target
+    String getFormattedUiAutoStopTarget() const;                      // Gets target as formatted string for HMI
+    bool checkAndHandleAutoStopCompletion();                          // Called in update() to check if MC stopped at target
+    bool isAutoStopCompletionPendingHmiSignal() const;                // Check if HMI signal is pending
+    void clearAutoStopCompletionHmiSignal();                          // Clear the HMI signal flag
+
 private:
     MotionControl *_motionControl;
     int32_t _z_axis_zero_offset_steps;  // For Z-axis zeroing
@@ -89,6 +100,14 @@ private:
 
     ThreadData _threadData;
     Position _positions;
+
+    // Z-Axis Auto-Stop State (UI-level)
+    bool _ui_autoStopEnabled;            // Reflects the HMI toggle for this mode's auto-stop
+    int32_t _ui_targetStopAbsoluteSteps; // Target stop position in absolute machine steps
+    bool _ui_targetStopIsSet;            // True if a target has been set by the UI
+
+    // Auto-stop HMI signaling
+    bool _autoStopCompletionPendingHmiSignal;
 
     bool _running;
     bool _error;

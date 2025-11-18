@@ -37,4 +37,16 @@ namespace HmiThreadingPageOptions
     // Default selected category index
     const uint8_t DEFAULT_THREAD_CATEGORY_INDEX = 0; // "Metric (mm)"
 
+    // Z-Axis Auto-Stop Feature HMI Addresses (for Threading Tab)
+    const uint16_t bool_auto_stop_enDisAddress = 211;
+    const uint16_t string_set_stop_disp_value_to_stm32Address = 212;   // HMI keyboard input to STM32
+    const uint16_t string_set_stop_disp_value_from_stm32Address = 213; // STM32 display to HMI
+    const uint16_t bool_grab_zAddress = 214;                           // "Use Current Z" button
+
+    // Lumen Packet Declarations for Auto-Stop (defined in .cpp file)
+    extern lumen_packet_t bool_auto_stop_enDisPacket;
+    extern lumen_packet_t string_set_stop_disp_value_to_stm32Packet;
+    extern lumen_packet_t string_set_stop_disp_value_from_stm32Packet;
+    extern lumen_packet_t bool_grab_zPacket;
+
 } // namespace HmiThreadingPageOptions

@@ -10,15 +10,28 @@ class DisplayComm;
 class MenuSystem; // Forward declare MenuSystem if passing it, or use TurningMode directly
 // class MotionControl; // No longer needed as forward declaration, full include above
 
-namespace TurningPageHandler
+class TurningPageHandler
 {
-    void init(TurningMode *turningModeInstance);        // Pass TurningMode instance
-    void onEnterPage(TurningMode *turningModeInstance); // To set initial displays based on its state
-    void onExitPage(TurningMode *turningModeInstance);  // Added for deactivation
-    // void handlePacket(const lumen_packet_t *packet); // Old signature
-    void handlePacket(const lumen_packet_t *packet, TurningMode *turningMode, DisplayComm *display, MotionControl *motionControl); // Kept MotionControl for other uses
-    void updateDRO(DisplayComm *display, TurningMode *turningMode);                                                                // DRO specific, no RPM
-    void flashCompleteMessage(DisplayComm *display, TurningMode *turningMode);                                                     // For auto-stop completion feedback
-    void update(TurningMode *turningMode, DisplayComm *display, MotionControl *motionControl);                                     // Expects MotionControl for RPM
+public:
+    // Public Interface
+    static void init(TurningMode *turningMode, DisplayComm *displayComm, MotionControl *motionControl);
+    static void onEnterPage();
+    static void onExitPage();
+    static void handlePacket(const lumen_packet_t *packet);
+    static void update();
 
-} // namespace TurningPageHandler
+private:
+    // Dependencies
+    static TurningMode *_turningMode;
+    static DisplayComm *_displayComm;
+    static MotionControl *_motionControl;
+
+    // Helper Methods
+    static void updateDRO();
+    static void sendTurningPageFeedDisplays();
+    static void flashCompleteMessage();
+
+    // Make class non-instantiable
+    TurningPageHandler() = delete;
+    ~TurningPageHandler() = delete;
+};

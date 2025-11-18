@@ -7,6 +7,7 @@
 #include <string.h>                 // For strncpy, memcpy
 #include "Motion/FeedRateManager.h" // For FeedRateManager
 #include "stm32h7xx_hal.h"          // For HAL_FLASH_Unlock/Lock
+#include "UI/HmiDebouncer.h"        // For button debouncing
 
 extern HardwareSerial SerialDebug;      // Declare SerialDebug as extern
 extern FeedRateManager feedRateManager; // Declare global feedRateManager
@@ -320,8 +321,8 @@ void SetupPageHandler::handlePacket(const lumen_packet_t *packet)
     }
     else if (packet->address == HmiSetupPageOptions::ADDR_PPR_PULSE)
     {
-        if (packet->data._bool)
-        { // Pulse to cycle
+        if (packet->data._bool && HmiDebouncer::shouldProcessButtonPress(packet->address, millis()))
+        { // Pulse to cycle (with debouncing)
             currentPprIndex = (currentPprIndex + 1) % HmiSetupPageOptions::pprListSize;
             uint16_t new_ppr = HmiSetupPageOptions::pprList[currentPprIndex];
             if (SystemConfig::RuntimeConfig::Encoder::ppr != new_ppr)
@@ -342,7 +343,7 @@ void SetupPageHandler::handlePacket(const lumen_packet_t *packet)
     // --- Column 2: Z Mechanical & Gearing, Z Motor & Driver ---
     else if (packet->address == HmiSetupPageOptions::ADDR_LEADSCREW_PITCH_PULSE)
     {
-        if (packet->data._bool) // Pulse to cycle
+        if (packet->data._bool && HmiDebouncer::shouldProcessButtonPress(packet->address, millis())) // Pulse to cycle (with debouncing)
         {
             float old_pitch = SystemConfig::RuntimeConfig::Z_Axis::lead_screw_pitch;
             if (SystemConfig::RuntimeConfig::Z_Axis::leadscrew_standard_is_metric)
@@ -405,8 +406,8 @@ void SetupPageHandler::handlePacket(const lumen_packet_t *packet)
     }
     else if (packet->address == HmiSetupPageOptions::ADDR_MICROSTEP_PULSE)
     {
-        if (packet->data._bool)
-        { // Pulse to cycle
+        if (packet->data._bool && HmiDebouncer::shouldProcessButtonPress(packet->address, millis()))
+        { // Pulse to cycle (with debouncing)
             currentZDriverMicrosteppingIndex = (currentZDriverMicrosteppingIndex + 1) % HmiSetupPageOptions::zDriverMicrosteppingListSize;
             uint32_t new_driver_pulses = HmiSetupPageOptions::zDriverMicrosteppingList[currentZDriverMicrosteppingIndex];
             if (SystemConfig::RuntimeConfig::Z_Axis::driver_pulses_per_rev != new_driver_pulses)
@@ -633,8 +634,8 @@ void SetupPageHandler::handlePacket(const lumen_packet_t *packet)
     // --- Action Buttons ---
     else if (packet->address == HmiSetupPageOptions::ADDR_SAVE_ALL_PARAMS_PULSE)
     {
-        if (packet->data._bool)
-        { // Pulse to save
+        if (packet->data._bool && HmiDebouncer::shouldProcessButtonPress(packet->address, millis(), 500))
+        { // Pulse to save (with longer debouncing for critical action)
             SerialDebug.println("SetupHandler: Save All Parameters button pressed. Attempting to save all settings to EEPROM...");
             HAL_Delay(500); // User requested 500ms delay
             // HAL_FLASH_Unlock() and HAL_FLASH_Lock() are handled by SystemConfig::ConfigManager::saveAllSettings()

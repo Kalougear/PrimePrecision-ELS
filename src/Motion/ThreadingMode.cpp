@@ -11,7 +11,11 @@ ThreadingMode::ThreadingMode()
       _running(false),
       _error(false),
       _errorMsg(""),
-      _z_axis_zero_offset_steps(0) // Initialize Z-axis zero offset
+      _z_axis_zero_offset_steps(0), // Initialize Z-axis zero offset
+      _ui_autoStopEnabled(false),
+      _ui_targetStopAbsoluteSteps(0),
+      _ui_targetStopIsSet(false),
+      _autoStopCompletionPendingHmiSignal(false)
 {
     // Initialize thread data to defaults
     _threadData.pitch = 1.0f; // Default to 1mm pitch
@@ -168,6 +172,9 @@ void ThreadingMode::update()
     }
     // Threading mode might have specific update logic, e.g., checking for end of thread pass
     // For now, main ELS sync is handled by MotionControl's ISR via SyncTimer
+
+    // Check for auto-stop completion
+    checkAndHandleAutoStopCompletion();
 }
 
 void ThreadingMode::setZeroPosition()
@@ -386,4 +393,173 @@ void ThreadingMode::handleError(const char *msg)
         _motionControl->stopMotion();
     }
     _running = false;
+}
+
+// --- Z-Axis Auto-Stop Feature Implementations ---
+
+void ThreadingMode::resetAutoStopRuntimeSettings()
+{
+    _ui_autoStopEnabled = false;
+    _ui_targetStopIsSet = false;
+    _ui_targetStopAbsoluteSteps = 0;
+    if (_motionControl)
+    {
+        _motionControl->clearAbsoluteTargetStop();
+    }
+    SerialDebug.println("ThreadingMode: Auto-stop runtime settings reset.");
+}
+
+void ThreadingMode::setUiAutoStopEnabled(bool enabled)
+{
+    _ui_autoStopEnabled = enabled;
+    if (!_ui_autoStopEnabled)
+    {
+        // If disabling, also clear any set target in MC and UI
+        _ui_targetStopIsSet = false;
+        _ui_targetStopAbsoluteSteps = 0;
+        if (_motionControl)
+        {
+            _motionControl->clearAbsoluteTargetStop();
+        }
+        SerialDebug.println("ThreadingMode: UI Auto-stop disabled, target cleared.");
+    }
+    else
+    {
+        // If enabling and a target is already set in UI, re-arm it in MC
+        if (_ui_targetStopIsSet && _motionControl)
+        {
+            _motionControl->configureAbsoluteTargetStop(_ui_targetStopAbsoluteSteps, true);
+        }
+        SerialDebug.println("ThreadingMode: UI Auto-stop enabled.");
+    }
+}
+
+bool ThreadingMode::isUiAutoStopEnabled() const
+{
+    return _ui_autoStopEnabled;
+}
+
+void ThreadingMode::setUiAutoStopTargetPositionFromString(const char *valueStr)
+{
+    if (!_motionControl)
+    {
+        SerialDebug.println("ThreadingMode::setUiAutoStopTargetPositionFromString - MC not available.");
+        return;
+    }
+
+    float userValue = atof(valueStr);
+
+    // In Threading mode, the target is always relative to the Z-zero point.
+    // The value from the HMI is the desired travel distance.
+    float target_travel_mm;
+
+    // Convert userValue to mm based on current system units
+    if (!SystemConfig::RuntimeConfig::System::measurement_unit_is_metric)
+    {
+        target_travel_mm = userValue * 25.4f; // Convert inches to mm
+    }
+    else
+    {
+        target_travel_mm = userValue; // Already in mm
+    }
+
+    // Determine the absolute target position in steps.
+    // The target is the Z-zero position plus the desired travel distance, considering the feed direction.
+    int32_t travel_steps = _motionControl->convertUnitsToSteps(target_travel_mm);
+
+    if (m_feedDirectionIsTowardsChuck)
+    { // Towards chuck is negative direction
+        _ui_targetStopAbsoluteSteps = _z_axis_zero_offset_steps - travel_steps;
+    }
+    else
+    { // Away from chuck is positive direction
+        _ui_targetStopAbsoluteSteps = _z_axis_zero_offset_steps + travel_steps;
+    }
+
+    _ui_targetStopIsSet = true;
+
+    SerialDebug.print("ThreadingMode: UI Auto-stop target string '");
+    SerialDebug.print(valueStr);
+    SerialDebug.print("' parsed to travel mm: ");
+    SerialDebug.print(target_travel_mm);
+    SerialDebug.print(", travel steps: ");
+    SerialDebug.print(travel_steps);
+    SerialDebug.print(", abs target steps: ");
+    SerialDebug.println(_ui_targetStopAbsoluteSteps);
+
+    if (_ui_autoStopEnabled)
+    {
+        _motionControl->configureAbsoluteTargetStop(_ui_targetStopAbsoluteSteps, true);
+    }
+}
+
+void ThreadingMode::grabCurrentZAsUiAutoStopTarget()
+{
+    if (!_motionControl)
+    {
+        SerialDebug.println("ThreadingMode::grabCurrentZAsUiAutoStopTarget - MC not available.");
+        return;
+    }
+    _ui_targetStopAbsoluteSteps = _motionControl->getCurrentPositionSteps();
+    _ui_targetStopIsSet = true;
+
+    SerialDebug.print("ThreadingMode: UI Auto-stop target grabbed as current Z (abs steps): ");
+    SerialDebug.println(_ui_targetStopAbsoluteSteps);
+
+    if (_ui_autoStopEnabled)
+    {
+        _motionControl->configureAbsoluteTargetStop(_ui_targetStopAbsoluteSteps, true);
+    }
+}
+
+String ThreadingMode::getFormattedUiAutoStopTarget() const
+{
+    if (!_ui_targetStopIsSet || !_motionControl)
+    {
+        return String("--- ") + (SystemConfig::RuntimeConfig::System::measurement_unit_is_metric ? "mm" : "in");
+    }
+
+    // Convert the absolute target steps back to a displayable travel distance from Z-zero
+    int32_t travel_steps = _ui_targetStopAbsoluteSteps - _z_axis_zero_offset_steps;
+    float travel_mm = _motionControl->convertStepsToUnits(abs(travel_steps));
+
+    float displayValue;
+    String unitStr;
+
+    if (SystemConfig::RuntimeConfig::System::measurement_unit_is_metric)
+    {
+        displayValue = travel_mm;
+        unitStr = "mm";
+    }
+    else
+    {
+        displayValue = travel_mm / 25.4f; // Convert mm to inches
+        unitStr = "in";
+    }
+
+    char buffer[SystemConfig::HmiParameters::MAX_HMI_STRING_LENGTH];
+    snprintf(buffer, sizeof(buffer), "%.2f %s", displayValue, unitStr.c_str());
+    return String(buffer);
+}
+
+bool ThreadingMode::checkAndHandleAutoStopCompletion()
+{
+    if (_motionControl && _motionControl->wasTargetStopReachedAndMotionHalted())
+    {
+        SerialDebug.println("ThreadingMode: Auto-stop completion detected from MotionControl.");
+        _ui_targetStopIsSet = false;
+        _autoStopCompletionPendingHmiSignal = true;
+        return true;
+    }
+    return false;
+}
+
+bool ThreadingMode::isAutoStopCompletionPendingHmiSignal() const
+{
+    return _autoStopCompletionPendingHmiSignal;
+}
+
+void ThreadingMode::clearAutoStopCompletionHmiSignal()
+{
+    _autoStopCompletionPendingHmiSignal = false;
 }

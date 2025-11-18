@@ -20,6 +20,20 @@ ThreadTable::ThreadData ThreadingPageHandler::_selectedPitchData = {"N/A", 0.0f,
 const ThreadTable::ThreadData *ThreadingPageHandler::_activePitchList = nullptr;
 size_t ThreadingPageHandler::_activePitchListSize = 0;
 
+// Auto-stop flasher
+ThreadingPageHandler::Flasher ThreadingPageHandler::_autoStopCompletionFlasher(
+    HmiThreadingPageOptions::string_set_stop_disp_value_from_stm32Address,
+    "REACHED!",
+    250, // on time
+    150  // off time
+);
+
+// Packet definitions
+lumen_packet_t bool_auto_stop_enDisPacket;
+lumen_packet_t string_set_stop_disp_value_to_stm32Packet;
+lumen_packet_t string_set_stop_disp_value_from_stm32Packet;
+lumen_packet_t bool_grab_zPacket;
+
 // Define the HMI address for Z position string (same as Turning Tab)
 const uint16_t STRING_Z_POS_ADDRESS_THREADING_DRO = 135;
 // Define DRO update interval
@@ -41,6 +55,9 @@ void ThreadingPageHandler::init(DisplayComm *displayComm, ThreadingMode *threadi
 
 void ThreadingPageHandler::onEnterPage()
 {
+    // Reset to default category every time the page is entered
+    _currentCategoryIndex = HmiThreadingPageOptions::DEFAULT_THREAD_CATEGORY_INDEX;
+
     updateCategoryDisplay();
     loadPitchesForCurrentCategoryAndSetDefault();
 
@@ -56,6 +73,8 @@ void ThreadingPageHandler::onEnterPage()
             _displayComm->updateText(HMI_DIRECTION_BUTTON_DISPLAY_ADDRESS, true); // Send bool true for RH/Towards Chuck
             SerialDebug.println("ThreadingPageHandler: Sent RH state (true) to HMI dir display (210).");
         }
+        _threadingMode->resetAutoStopRuntimeSettings();
+        updateAutoStopTargetDisplay();
         _threadingMode->activate();
     }
     SerialDebug.print("ThreadingPageHandler: Entered Page. Current category: ");
@@ -164,6 +183,30 @@ void ThreadingPageHandler::handlePacket(const lumen_packet_t *packet)
             // SerialDebug.println("Motor state changed"); // Temporarily commented out due to persistent "too many arguments" error
         }
     }
+    else if (packet->address == HmiThreadingPageOptions::bool_auto_stop_enDisAddress && packet->type == kBool)
+    {
+        if (_threadingMode)
+        {
+            _threadingMode->setUiAutoStopEnabled(packet->data._bool);
+            updateAutoStopTargetDisplay();
+        }
+    }
+    else if (packet->address == HmiThreadingPageOptions::string_set_stop_disp_value_to_stm32Address && packet->type == kString)
+    {
+        if (_threadingMode)
+        {
+            _threadingMode->setUiAutoStopTargetPositionFromString(packet->data._string);
+            updateAutoStopTargetDisplay();
+        }
+    }
+    else if (packet->address == HmiThreadingPageOptions::bool_grab_zAddress && packet->type == kBool)
+    {
+        if (packet->data._bool && _threadingMode) // React on button press (true)
+        {
+            _threadingMode->grabCurrentZAsUiAutoStopTarget();
+            updateAutoStopTargetDisplay();
+        }
+    }
 }
 
 void ThreadingPageHandler::updateDRO()
@@ -222,7 +265,9 @@ void ThreadingPageHandler::update()
         _lastDROUpdateTime = currentTime;
     }
 
-    // Any other periodic updates for Threading Page can go here
+    // Handle auto-stop completion and flashing
+    checkAndHandleAutoStopCompletionFlash();
+    _autoStopCompletionFlasher.update();
 }
 
 const ThreadTable::ThreadData &ThreadingPageHandler::getSelectedPitchData()
@@ -597,4 +642,54 @@ void ThreadingPageHandler::updatePitchDisplay()
 
     SerialDebug.print("ThreadingPageHandler: Sent pitch to HMI: ");
     SerialDebug.println(pitch_string_buffer);
+}
+
+void ThreadingPageHandler::updateAutoStopTargetDisplay()
+{
+    if (!_displayComm || !_threadingMode)
+    {
+        return;
+    }
+    String formattedTarget = _threadingMode->getFormattedUiAutoStopTarget();
+    _displayComm->updateText(HmiThreadingPageOptions::string_set_stop_disp_value_from_stm32Address, formattedTarget.c_str());
+}
+
+void ThreadingPageHandler::checkAndHandleAutoStopCompletionFlash()
+{
+    if (_threadingMode && _threadingMode->isAutoStopCompletionPendingHmiSignal())
+    {
+        _threadingMode->clearAutoStopCompletionHmiSignal();
+        _autoStopCompletionFlasher.start();
+    }
+}
+
+void ThreadingPageHandler::Flasher::update()
+{
+    if (!active)
+    {
+        return;
+    }
+
+    uint32_t elapsed = millis() - startTime;
+    uint32_t cycleTime = onTime + offTime;
+    uint8_t currentCycle = elapsed / cycleTime;
+
+    if (currentCycle >= 3) // Flash 3 times
+    {
+        stop();
+        // After flashing, restore the original display
+        ThreadingPageHandler::updateAutoStopTargetDisplay();
+        return;
+    }
+
+    bool isOn = (elapsed % cycleTime) < onTime;
+    if (isOn)
+    {
+        _displayComm->updateText(address, message);
+    }
+    else
+    {
+        // Show blank during off-time
+        _displayComm->updateText(address, "");
+    }
 }

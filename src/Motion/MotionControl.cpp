@@ -62,20 +62,18 @@ MotionControl::~MotionControl()
  * @note This method is critical and must be called before any motion operations.
  * The order of initialization (TimerControl for TIM1, then EncoderTimer for TIM2) is important.
  */
-bool MotionControl::begin()
+bool MotionControl::begin(EncoderTimer *encoder)
 {
+    _encoder = encoder; // Store the pointer to the global encoder instance
+
     // Initialize STM32Step TimerControl (TIM1) for Stepper ISR.
     // This is a static init and should be called once.
     STM32Step::TimerControl::init();
-    // Note: We discovered that EncoderTimer (TIM2) should ideally be initialized *before*
-    // STM32Step::TimerControl (TIM1) if there are HAL interactions.
-    // However, MotionControl owns _encoder, and _encoder.begin() is called next.
-    // The global EncoderTimer instance in main.cpp handles the pre-initialization of TIM2.
 
-    // Initialize encoder (_encoder is a member object)
-    if (!_encoder.begin())
+    // The global EncoderTimer instance is already initialized in main.cpp, so we don't call _encoder->begin() here.
+    if (!_encoder || !_encoder->isValid())
     {
-        handleError("Encoder initialization failed in MotionControl");
+        handleError("Encoder provided to MotionControl is not valid.");
         return false;
     }
 
@@ -90,7 +88,7 @@ bool MotionControl::begin()
 
     // Initialize sync timer (_syncTimer is a member object)
     // Pass references to the already initialized _encoder and _stepper.
-    if (!_syncTimer.begin(&_encoder, _stepper))
+    if (!_syncTimer.begin(_encoder, _stepper))
     {
         handleError("Sync timer initialization failed in MotionControl");
         return false;
@@ -118,7 +116,7 @@ void MotionControl::end()
         delete _stepper;     // Free the stepper object
         _stepper = nullptr;
     }
-    _encoder.end();   // De-initialize encoder timer
+    // We don't call _encoder->end() here, as the global instance is managed by main.cpp
     _syncTimer.end(); // De-initialize sync timer
     _running = false;
     _error = false;
@@ -195,8 +193,8 @@ void MotionControl::startMotion()
     }
     SerialDebug.print("MC::startMotion - Before component check. _stepper: ");
     SerialDebug.print(_stepper ? "VALID" : "NULL");
-    SerialDebug.print(", _encoder.isValid(): ");
-    SerialDebug.print(_encoder.isValid() ? "VALID" : "INVALID");
+    SerialDebug.print(", _encoder->isValid(): ");
+    SerialDebug.print(_encoder->isValid() ? "VALID" : "INVALID");
     SerialDebug.print(", _syncTimer.isInitialized(): ");
     SerialDebug.println(_syncTimer.isInitialized() ? "VALID" : "INVALID");
 
@@ -207,7 +205,7 @@ void MotionControl::startMotion()
         _stepper->stop();
     }
 
-    if (!_stepper || !_encoder.isValid() || !_syncTimer.isInitialized())
+    if (!_stepper || !_encoder->isValid() || !_syncTimer.isInitialized())
     {
         SerialDebug.println("MC::startMotion - Error: Components not initialized.");
         handleError("Cannot start motion: Components not initialized.");
@@ -218,7 +216,7 @@ void MotionControl::startMotion()
     calculateAndSetSyncTimerConfig();
 
     // Prepare and start components
-    _encoder.reset();        // Reset encoder count to start fresh
+    _encoder->reset();       // Reset encoder count to start fresh
     _stepper->enable();      // Enable the stepper motor driver
     _syncTimer.enable(true); // Enable the SyncTimer ISR processing
 
@@ -302,7 +300,7 @@ void MotionControl::emergencyStop()
 MotionControl::Status MotionControl::getStatus() const
 {
     Status status;
-    EncoderTimer::Position encPos = _encoder.getPosition();
+    EncoderTimer::Position encPos = _encoder->getPosition();
     status.encoder_position = encPos.count;
 
     float encoderRpm = static_cast<float>(encPos.rpm);
@@ -928,4 +926,71 @@ bool MotionControl::isElsActive() const
     // SerialDebug.print(" -> isActive=");
     // SerialDebug.println(isActive);
     return isActive;
+}
+
+// --- Unit Conversion Utilities ---
+
+int32_t MotionControl::convertUnitsToSteps(float units) const
+{
+    float valueInMm;
+    if (!SystemConfig::RuntimeConfig::System::measurement_unit_is_metric)
+    {
+        valueInMm = units * 25.4f; // Convert inches to mm
+    }
+    else
+    {
+        valueInMm = units; // Already in mm
+    }
+
+    float z_motor_total_usteps = static_cast<float>(SystemConfig::RuntimeConfig::Z_Axis::driver_pulses_per_rev);
+    float z_motor_pulley_teeth = static_cast<float>(SystemConfig::RuntimeConfig::Z_Axis::motor_pulley_teeth);
+    if (z_motor_pulley_teeth < 1.0f)
+        z_motor_pulley_teeth = 1.0f;
+    float z_leadscrew_pulley_teeth = static_cast<float>(SystemConfig::RuntimeConfig::Z_Axis::lead_screw_pulley_teeth);
+    if (z_leadscrew_pulley_teeth < 1.0f)
+        z_leadscrew_pulley_teeth = 1.0f;
+
+    float z_ls_pitch_val = SystemConfig::RuntimeConfig::Z_Axis::lead_screw_pitch;
+    bool z_ls_is_metric = SystemConfig::RuntimeConfig::Z_Axis::leadscrew_standard_is_metric;
+    float z_ls_pitch_mm_per_ls_rev = z_ls_is_metric ? z_ls_pitch_val : (z_ls_pitch_val > 0 ? 25.4f / z_ls_pitch_val : 0.0f);
+    if (fabsf(z_ls_pitch_mm_per_ls_rev) < 0.00001f)
+        return 0;
+
+    float z_mm_travel_per_motor_rev = (z_motor_pulley_teeth / z_leadscrew_pulley_teeth) * z_ls_pitch_mm_per_ls_rev;
+    if (fabsf(z_mm_travel_per_motor_rev) < 0.00001f)
+        return 0;
+
+    float z_usteps_per_mm_travel = z_motor_total_usteps / z_mm_travel_per_motor_rev;
+
+    return static_cast<int32_t>(roundf(valueInMm * z_usteps_per_mm_travel));
+}
+
+float MotionControl::convertStepsToUnits(int32_t steps) const
+{
+    float z_motor_total_usteps = static_cast<float>(SystemConfig::RuntimeConfig::Z_Axis::driver_pulses_per_rev);
+    float z_motor_pulley_teeth = static_cast<float>(SystemConfig::RuntimeConfig::Z_Axis::motor_pulley_teeth);
+    if (z_motor_pulley_teeth < 1.0f)
+        z_motor_pulley_teeth = 1.0f;
+    float z_leadscrew_pulley_teeth = static_cast<float>(SystemConfig::RuntimeConfig::Z_Axis::lead_screw_pulley_teeth);
+    if (z_leadscrew_pulley_teeth < 1.0f)
+        z_leadscrew_pulley_teeth = 1.0f;
+
+    float z_ls_pitch_val = SystemConfig::RuntimeConfig::Z_Axis::lead_screw_pitch;
+    bool z_ls_is_metric = SystemConfig::RuntimeConfig::Z_Axis::leadscrew_standard_is_metric;
+    float z_ls_pitch_mm_per_ls_rev = z_ls_is_metric ? z_ls_pitch_val : (z_ls_pitch_val > 0 ? 25.4f / z_ls_pitch_val : 0.0f);
+    if (fabsf(z_ls_pitch_mm_per_ls_rev) < 0.00001f)
+        return 0.0f;
+
+    float z_mm_travel_per_motor_rev = (z_motor_pulley_teeth / z_leadscrew_pulley_teeth) * z_ls_pitch_mm_per_ls_rev;
+    if (fabsf(z_mm_travel_per_motor_rev) < 0.00001f)
+        return 0.0f;
+
+    float valueInMm = static_cast<float>(steps) * (z_mm_travel_per_motor_rev / z_motor_total_usteps);
+
+    if (!SystemConfig::RuntimeConfig::System::measurement_unit_is_metric)
+    {
+        return valueInMm / 25.4f; // Convert mm to inches
+    }
+
+    return valueInMm;
 }
