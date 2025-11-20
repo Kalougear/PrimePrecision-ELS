@@ -281,7 +281,7 @@ void MenuSystem::updateTurningScreen()
         return;
     char feedRateStr[20];
     float feedValue = _turningMode->getFeedRateValue();
-    const char *units = _turningMode->getFeedRateIsMetric() ? "mm/rev" : "inch/rev";
+    const char *units = _turningMode->getFeedRateIsMetric() ? "mm/rev" : "in/rev";
     if (!_turningMode->getFeedRateIsMetric() && feedValue < 1.0f)
     {
         snprintf(feedRateStr, sizeof(feedRateStr), "%.4f %s", feedValue, units);
@@ -307,7 +307,7 @@ void MenuSystem::cycleTurningFeedRate(bool increase)
         _turningMode->selectPreviousFeedRate();
     char feedMsg[40];
     float feedValue = _turningMode->getFeedRateValue();
-    const char *units = _turningMode->getFeedRateIsMetric() ? "mm/rev" : "inch/rev";
+    const char *units = _turningMode->getFeedRateIsMetric() ? "mm/rev" : "in/rev";
     if (!_turningMode->getFeedRateIsMetric() && feedValue < 1.0f)
     {
         snprintf(feedMsg, sizeof(feedMsg), "Feed: %.4f %s", feedValue, units);

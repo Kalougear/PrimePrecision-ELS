@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Refactored Stepper Motor Control to Hardware PWM:**
+  - Replaced the software ISR-based step pulse generation with a hardware-driven approach using TIM1 in PWM mode.
+  - This eliminates the high-frequency interrupt load on the CPU, resulting in jitter-free step pulses and significantly improved performance.
+  - The `STM32Step` library was modified to use the timer's Repetition Counter (RCR) for precise, non-blocking moves (`moveExact`) and continuous frequency control for jogging (`runContinuous`).
+  - The `SyncTimer` ISR now calculates the required velocity and step count for each time slice and commands the hardware timer directly, rather than bit-banging GPIOs.
+
 ### Fixed
 
 - Serial communication reliability improved by simplifying serial debug configuration

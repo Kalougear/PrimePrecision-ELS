@@ -15,7 +15,8 @@ namespace JogPageHandler
     static MotionControl *_motionControlInstance = nullptr;
     static int _currentJogSpeedIndex = 0;
     static float _currentJogSpeedMmPerMin = 0.0f;
-    static MotionControl::JogDirection _currentJogDirectionCmd = MotionControl::JogDirection::JOG_NONE;
+    static bool _isJoggingLeft = false;
+    static bool _isJoggingRight = false;
     static bool _jogSpeedChanged = false; // Flag to track if jog speed was changed
 
     // Helper function to update jog speed display on HMI
@@ -165,11 +166,22 @@ namespace JogPageHandler
         // If buttonValue is 0 (release), do nothing to the speed.
 
         // If a jog is currently active and speed changed, update its speed
-        if (speedChanged && _motionControlInstance->isJogActive() && _currentJogDirectionCmd != MotionControl::JogDirection::JOG_NONE)
+        if (speedChanged && _motionControlInstance->isJogActive())
         {
-            // SerialDebug.println("JogPageHandler: Jog active, re-initiating with new speed.");
-            // MotionControl::beginContinuousJog will internally cap the speed with max_jog_speed_mm_per_min
-            _motionControlInstance->beginContinuousJog(_currentJogDirectionCmd, _currentJogSpeedMmPerMin);
+            MotionControl::JogDirection currentDirection = MotionControl::JogDirection::JOG_NONE;
+            if (_isJoggingLeft)
+            {
+                currentDirection = MotionControl::JogDirection::JOG_TOWARDS_CHUCK;
+            }
+            else if (_isJoggingRight)
+            {
+                currentDirection = MotionControl::JogDirection::JOG_AWAY_FROM_CHUCK;
+            }
+
+            if (currentDirection != MotionControl::JogDirection::JOG_NONE)
+            {
+                _motionControlInstance->beginContinuousJog(currentDirection, _currentJogSpeedMmPerMin);
+            }
         }
     }
 
@@ -177,155 +189,59 @@ namespace JogPageHandler
     {
         if (!packet || !_motionControlInstance)
         {
-            // SerialDebug.println("JogPageHandler::handlePacket - Error: Invalid packet or MotionControl instance pointer.");
             return;
         }
 
-        // SerialDebug.print("JogPageHandler: RX Addr ");
-        // SerialDebug.print(packet->address);
-
-        // Check master jog system enable flag first for any jog related commands
         bool canJog = SystemConfig::RuntimeConfig::System::jog_system_enabled;
-        if (packet->address == HmiJogPageOptions::bool_jog_leftAddress || packet->address == HmiJogPageOptions::bool_jog_rightAddress)
+
+        // Update state based on incoming packets
+        if (packet->address == HmiJogPageOptions::bool_jog_leftAddress && packet->type == kBool)
         {
-            if (!canJog)
-            {
-                // SerialDebug.println(" -> Jog system is disabled. Ignoring jog command.");
-                // Ensure any active jog is stopped if system gets disabled during a jog press
-                if (_currentJogDirectionCmd != MotionControl::JogDirection::JOG_NONE)
-                {
-                    _motionControlInstance->endContinuousJog();
-                    _currentJogDirectionCmd = MotionControl::JogDirection::JOG_NONE;
-                }
-                return; // Do not process further if jog system is disabled
-            }
-            // RPM check (temporarily disabled as per original code)
-            // SerialDebug.println(" -> RPM check for jog temporarily disabled for debugging.");
-            // MotionControl::Status mcStatus = _motionControlInstance->getStatus();
-            // if (mcStatus.spindle_rpm != 0) {
-            //     // SerialDebug.print(" -> Spindle RPM is ");
-            //     // SerialDebug.print(mcStatus.spindle_rpm);
-            //     // SerialDebug.println(". Jogging inhibited.");
-            //     if (_currentJogDirectionCmd != MotionControl::JogDirection::JOG_NONE) {
-            //         _motionControlInstance->endContinuousJog();
-            //         _currentJogDirectionCmd = MotionControl::JogDirection::JOG_NONE;
-            //     }
-            //     return;
-            // }
+            _isJoggingLeft = packet->data._bool;
+        }
+        else if (packet->address == HmiJogPageOptions::bool_jog_rightAddress && packet->type == kBool)
+        {
+            _isJoggingRight = packet->data._bool;
+        }
+        else if (packet->address == HmiJogPageOptions::int_prev_next_jog_speedAddress && (packet->type == kS32 || packet->type == kBool))
+        {
+            handleJogSpeedSelection(packet->data._s32);
+        }
+        else if (packet->address == HmiJogPageOptions::bool_jog_system_enableAddress && packet->type == kBool)
+        {
+            SystemConfig::RuntimeConfig::System::jog_system_enabled = !packet->data._bool;
+            // If jog is disabled while active, the logic below will stop it.
         }
 
-        if (packet->address == HmiJogPageOptions::bool_jog_leftAddress) // Address 185
+        // Now, determine the action based on the current state
+        if (canJog && _isJoggingLeft && !_isJoggingRight)
         {
-            if (packet->type == kBool)
-            {
-                bool jogLeftPressed = packet->data._bool;
-                // SerialDebug.print(" -> Jog Left (185) HMI value: ");
-                // SerialDebug.println(jogLeftPressed ? "PRESSED" : "RELEASED");
-
-                if (jogLeftPressed)
-                {
-                    _currentJogDirectionCmd = MotionControl::JogDirection::JOG_TOWARDS_CHUCK;
-                    _motionControlInstance->beginContinuousJog(_currentJogDirectionCmd, _currentJogSpeedMmPerMin);
-                }
-                else // Jog Left Released
-                {
-                    if (_currentJogDirectionCmd == MotionControl::JogDirection::JOG_TOWARDS_CHUCK)
-                    {
-                        _motionControlInstance->endContinuousJog();
-                        _currentJogDirectionCmd = MotionControl::JogDirection::JOG_NONE;
-                    }
-                }
-            }
-            else
-            {
-                // SerialDebug.print(" -> WRONG TYPE for Jog Left (expected Bool, got ");
-                // SerialDebug.print(packet->type);
-                // SerialDebug.println(")");
-            }
+            _motionControlInstance->beginContinuousJog(MotionControl::JogDirection::JOG_TOWARDS_CHUCK, _currentJogSpeedMmPerMin);
         }
-        else if (packet->address == HmiJogPageOptions::bool_jog_rightAddress) // Address 186
+        else if (canJog && _isJoggingRight && !_isJoggingLeft)
         {
-            if (packet->type == kBool)
-            {
-                bool jogRightPressed = packet->data._bool;
-                // SerialDebug.print(" -> Jog Right (186) HMI value: ");
-                // SerialDebug.println(jogRightPressed ? "PRESSED" : "RELEASED");
-
-                if (jogRightPressed)
-                {
-                    _currentJogDirectionCmd = MotionControl::JogDirection::JOG_AWAY_FROM_CHUCK;
-                    _motionControlInstance->beginContinuousJog(_currentJogDirectionCmd, _currentJogSpeedMmPerMin);
-                }
-                else // Jog Right Released
-                {
-                    if (_currentJogDirectionCmd == MotionControl::JogDirection::JOG_AWAY_FROM_CHUCK)
-                    {
-                        _motionControlInstance->endContinuousJog();
-                        _currentJogDirectionCmd = MotionControl::JogDirection::JOG_NONE;
-                    }
-                }
-            }
-            else
-            {
-                // SerialDebug.print(" -> WRONG TYPE for Jog Right (expected Bool, got ");
-                // SerialDebug.print(packet->type);
-                // SerialDebug.println(")");
-            }
-        }
-        else if (packet->address == HmiJogPageOptions::int_prev_next_jog_speedAddress) // Address 194
-        {
-            if (packet->type == kS32 || packet->type == kBool)
-            { // HMI sends kS32
-                int32_t speedCmdValue = packet->data._s32;
-                // SerialDebug.print(" -> Jog Speed P/N (194) value: ");
-                // SerialDebug.println(speedCmdValue);
-                handleJogSpeedSelection(speedCmdValue);
-            }
-            else
-            {
-                // SerialDebug.print(" -> WRONG TYPE for Jog Speed P/N (expected S32/Bool, got ");
-                // SerialDebug.print(packet->type);
-                // SerialDebug.println(")");
-            }
-        }
-        // Future: Handle Max Jog Speed input from HMI if added
-        else if (packet->address == HmiJogPageOptions::bool_jog_system_enableAddress) // Address 195
-        {
-            if (packet->type == kBool)
-            {
-                bool hmiSignalState = packet->data._bool; // True if HMI button indicates "enable", false for "disable"
-                // If HMI signal is inverted relative to system logic:
-                SystemConfig::RuntimeConfig::System::jog_system_enabled = !hmiSignalState;
-
-                // SerialDebug.print(" -> Jog System Enable HMI Signal (195): ");
-                // SerialDebug.print(hmiSignalState ? "ON (requesting enable)" : "OFF (requesting disable)");
-                // SerialDebug.print(" -> System Jog Actual State: ");
-                // SerialDebug.println(SystemConfig::RuntimeConfig::System::jog_system_enabled ? "ENABLED" : "DISABLED");
-
-                // If jog system is NOW disabled (SystemConfig... == false) while a jog is active, stop the jog.
-                if (!SystemConfig::RuntimeConfig::System::jog_system_enabled && _motionControlInstance && _motionControlInstance->isJogActive())
-                {
-                    // SerialDebug.println("JogPageHandler: Jog system disabled while jog active. Stopping jog.");
-                    _motionControlInstance->endContinuousJog();
-                    _currentJogDirectionCmd = MotionControl::JogDirection::JOG_NONE; // Reset direction
-                }
-                // Optionally, send the state back to HMI if there's a display element for it
-            }
-            else
-            {
-                // SerialDebug.print(" -> WRONG TYPE for Jog System Enable (expected Bool, got ");
-                // SerialDebug.print(packet->type);
-                // SerialDebug.println(")");
-            }
+            _motionControlInstance->beginContinuousJog(MotionControl::JogDirection::JOG_AWAY_FROM_CHUCK, _currentJogSpeedMmPerMin);
         }
         else
         {
-            // SerialDebug.println(" -> Not handled by JogPageHandler logic.");
+            // Stop if both buttons are pressed, neither is pressed, or jog is disabled
+            if (_motionControlInstance->isJogActive())
+            {
+                _motionControlInstance->endContinuousJog();
+            }
         }
     }
 
     void onExitPage()
     {
+        // SAFETY: Stop any active jog when exiting the page
+        if (_motionControlInstance && _motionControlInstance->isJogActive())
+        {
+            _motionControlInstance->endContinuousJog();
+        }
+        _isJoggingLeft = false;
+        _isJoggingRight = false;
+
         if (_currentJogSpeedIndex >= 0 && _currentJogSpeedIndex < HmiJogPageOptions::NUM_JOG_SPEEDS)
         {
             // Update the RAM value with the last selected jog speed index

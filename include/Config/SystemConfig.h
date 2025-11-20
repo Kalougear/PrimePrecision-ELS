@@ -22,6 +22,9 @@ namespace SystemConfig
 
             static constexpr uint8_t MIN_FILTER = 0;
             static constexpr uint8_t MAX_FILTER = 15;
+            // Higher value = more noise immunity but more signal delay.
+            // A value too high may filter out valid high-speed pulses.
+            // Good starting range: 4-12.
             static constexpr uint8_t DEFAULT_FILTER = 10;         // Adjusted from 12 back towards 8
             static constexpr uint32_t MIN_RPM_DELTA_TIME_MS = 10; // Minimum time delta (ms) for reliable RPM calculation
 
@@ -66,6 +69,9 @@ namespace SystemConfig
         {
             static constexpr uint32_t MIN_SYNC_FREQ = 1000;
             static constexpr uint32_t MAX_SYNC_FREQ = 100000;
+            // Frequency of the SyncTimer ISR. Higher values provide lower latency and smoother motion,
+            // but increase CPU load. A value too low may feel unresponsive.
+            // Good starting range: 20000-50000 Hz.
             static constexpr uint32_t DEFAULT_SYNC_FREQ = 50000;
             static constexpr float DEFAULT_THREAD_PITCH = 1.0f;
             // DEFAULT_LEADSCREW_PITCH will move to Z_Axis limits
@@ -79,9 +85,9 @@ namespace SystemConfig
             static constexpr uint16_t DEFAULT_LEAD_SCREW_PULLEY_TEETH = 40;
             static constexpr float DEFAULT_LEAD_SCREW_PITCH = 2.0f;            // mm per revolution of leadscrew
             static constexpr uint32_t DEFAULT_DRIVER_PULSES_PER_REV = 3200;    // Motor steps * microsteps for Z-axis motor
-            static constexpr float DEFAULT_MAX_FEED_RATE = 1000.0f;            // mm/min for Z-axis rapids (general ELS)
+            static constexpr float DEFAULT_MAX_FEED_RATE = 2000.0f;            // mm/min for Z-axis rapids (general ELS)
             static constexpr float DEFAULT_MAX_JOG_SPEED_MM_PER_MIN = 600.0f;  // mm/min specifically for jogging
-            static constexpr float DEFAULT_ACCELERATION = 10.0f;               // mm/s^2 for Z-axis (Drastically reduced for testing)
+            static constexpr float DEFAULT_ACCELERATION = 20.0f;               // mm/s^2 for Z-axis (Drastically reduced for testing)
             static constexpr float DEFAULT_BACKLASH_COMPENSATION = 0.02f;      // mm for Z-axis
             static constexpr bool DEFAULT_LEADSCREW_STANDARD_IS_METRIC = true; // true for MM, false for Inches
             static constexpr bool DEFAULT_ENABLE_POLARITY_ACTIVE_HIGH = true;  // true for active high, false for active low

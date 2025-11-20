@@ -29,22 +29,22 @@ namespace STM32Step
         // Timer Output Pin (PWM)
         struct StepPin
         {
-            static constexpr uint8_t PIN = 9; ///< PE9 - TIM1_CH1
-            static GPIO_TypeDef *const PORT;  ///< GPIOE
+            static constexpr uint16_t PIN = GPIO_PIN_9; ///< PE9
+            static GPIO_TypeDef *const PORT;
         };
 
         // Direction Control
         struct DirPin
         {
-            static constexpr uint8_t PIN = 8; ///< PE8
-            static GPIO_TypeDef *const PORT;  ///< GPIOE
+            static constexpr uint16_t PIN = GPIO_PIN_8; ///< PE8
+            static GPIO_TypeDef *const PORT;
         };
 
         // Enable Control
         struct EnablePin
         {
-            static constexpr uint8_t PIN = 7; ///< PE7
-            static GPIO_TypeDef *const PORT;  ///< GPIOE
+            static constexpr uint16_t PIN = GPIO_PIN_7; ///< PE7
+            static GPIO_TypeDef *const PORT;
         };
     };
 

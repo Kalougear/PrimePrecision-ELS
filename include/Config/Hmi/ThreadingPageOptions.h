@@ -29,8 +29,8 @@ namespace HmiThreadingPageOptions
     // Thread Categories
     // Note: The order here defines the cycling order
     const char *const THREAD_CATEGORIES[] = {
-        "Metric (mm)",
-        "Imperial (TPI)"};
+        "METRIC (MM)",
+        "IMPERIAL (TPI)"};
 
     const size_t NUM_THREAD_CATEGORIES = sizeof(THREAD_CATEGORIES) / sizeof(THREAD_CATEGORIES[0]); // Should be 2
 

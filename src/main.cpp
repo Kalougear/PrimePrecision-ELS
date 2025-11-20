@@ -30,10 +30,6 @@ enum ActiveHmiPage
 ActiveHmiPage currentPage = PAGE_TURNING;
 const uint16_t int_tab_selectionAddress = 136;
 
-static const uint8_t ACTUAL_STEP_PIN = STM32Step::PinConfig::StepPin::PIN;
-static const uint8_t ACTUAL_DIR_PIN = STM32Step::PinConfig::DirPin::PIN;
-static const uint8_t ACTUAL_ENABLE_PIN = STM32Step::PinConfig::EnablePin::PIN;
-
 HardwareSerial SerialDebug(PD9, PD8);
 HardwareSerial SerialDisplay(PA10, PA9);
 DisplayComm displayComm;
@@ -71,7 +67,7 @@ void sendMainPageFeedRateDisplay()
 }
 
 EncoderTimer globalEncoderTimerInstance;
-MotionControl motionCtrl(MotionControl::MotionPins{ACTUAL_STEP_PIN, ACTUAL_DIR_PIN, ACTUAL_ENABLE_PIN});
+MotionControl motionCtrl(MotionControl::MotionPins{STM32Step::PinConfig::StepPin::PIN, STM32Step::PinConfig::DirPin::PIN, STM32Step::PinConfig::EnablePin::PIN});
 
 volatile bool g_exti_pa5_index_pulse_detected = false;
 volatile unsigned long g_last_pa5_interrupt_time = 0;
@@ -163,6 +159,9 @@ void setup()
             ;
     }
 
+    // Enable the stepper motor driver
+    motionCtrl.getStepperInstance()->enable();
+
     MotionControl::Config cfg;
     cfg.thread_pitch = 0.5f;
     cfg.leadscrew_pitch = SystemConfig::RuntimeConfig::Z_Axis::lead_screw_pitch;
@@ -196,9 +195,12 @@ void setup()
 
     sendMainPageFeedRateDisplay();
 
-    SetupPageHandler::onEnterPage();
-    TurningPageHandler::onEnterPage();
-    JogPageHandler::onEnterPage();
+    // Force HMI to Page 1 (Turning) on startup
+    // Only initialize the active page to ensure consistent state
+    if (currentPage == PAGE_TURNING)
+    {
+        TurningPageHandler::onEnterPage();
+    }
 }
 
 void loop()
